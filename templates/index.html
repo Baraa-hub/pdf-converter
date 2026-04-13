@@ -7,18 +7,35 @@
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
-  .card { background: white; border-radius: 20px; padding: 44px; max-width: 580px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.10); }
+  .card { background: white; border-radius: 20px; padding: 44px; max-width: 600px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.10); }
   h1 { font-size: 28px; font-weight: 800; color: #111; margin-bottom: 6px; }
   .subtitle { color: #777; font-size: 15px; margin-bottom: 36px; }
-  .drop-zone { border: 2px dashed #d1d5db; border-radius: 14px; padding: 44px 20px; text-align: center; cursor: pointer; transition: all 0.2s; background: #fafafa; margin-bottom: 28px; }
+  .drop-zone { border: 2px dashed #d1d5db; border-radius: 14px; padding: 44px 20px; text-align: center; cursor: pointer; transition: all 0.2s; background: #fafafa; margin-bottom: 20px; }
   .drop-zone:hover, .drop-zone.drag-over { border-color: #6366f1; background: #f5f3ff; }
   .drop-zone input { display: none; }
   .drop-icon { font-size: 44px; margin-bottom: 14px; display: block; }
   .drop-text { font-size: 16px; font-weight: 600; color: #333; }
   .drop-hint { font-size: 13px; color: #aaa; margin-top: 5px; }
-  .file-selected { display: none; align-items: center; gap: 10px; background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 12px; padding: 14px 18px; margin-bottom: 28px; }
+  .file-selected { display: none; align-items: center; gap: 10px; background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px; }
   .file-selected .fname { font-size: 14px; color: #166534; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .remove { background: none; border: none; cursor: pointer; color: #aaa; font-size: 20px; line-height: 1; }
+  .remove { background: none; border: none; cursor: pointer; color: #aaa; font-size: 20px; }
+
+  /* Detection banner */
+  .detect-banner { display: none; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px; font-size: 14px; font-weight: 500; align-items: center; gap: 10px; }
+  .detect-banner.text-pdf { background: #eff6ff; border: 1.5px solid #bfdbfe; color: #1e40af; }
+  .detect-banner.scanned-pdf { background: #fff7ed; border: 1.5px solid #fed7aa; color: #9a3412; }
+
+  /* OCR mode selector */
+  .mode-selector { display: none; background: #fafafa; border: 1.5px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 20px; }
+  .mode-selector p { font-size: 13px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
+  .mode-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .mode-opt { border: 1.5px solid #e5e7eb; border-radius: 10px; padding: 14px 12px; cursor: pointer; transition: all 0.15s; background: white; text-align: left; }
+  .mode-opt:hover { border-color: #6366f1; }
+  .mode-opt.active { border-color: #6366f1; background: #eef2ff; }
+  .mode-opt .mode-title { font-size: 14px; font-weight: 700; color: #333; display: block; margin-bottom: 4px; }
+  .mode-opt.active .mode-title { color: #4f46e5; }
+  .mode-opt .mode-desc { font-size: 12px; color: #888; display: block; line-height: 1.4; }
+
   .section-label { font-size: 12px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 12px; }
   .formats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 32px; }
   .fmt { border: 1.5px solid #e5e7eb; border-radius: 12px; padding: 14px 6px; text-align: center; cursor: pointer; transition: all 0.15s; background: #fafafa; }
@@ -28,7 +45,7 @@
   .fmt .ext { font-size: 13px; font-weight: 700; color: #333; display: block; }
   .fmt .desc { font-size: 10px; color: #999; margin-top: 3px; display: block; }
   .fmt.active .ext { color: #4f46e5; }
-  .btn { width: 100%; padding: 15px; background: #4f46e5; color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer; transition: background 0.2s; letter-spacing: 0.01em; }
+  .btn { width: 100%; padding: 15px; background: #4f46e5; color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer; transition: background 0.2s; }
   .btn:hover:not(:disabled) { background: #4338ca; }
   .btn:disabled { opacity: 0.45; cursor: not-allowed; }
   .status { display: none; margin-top: 18px; padding: 14px 18px; border-radius: 12px; font-size: 14px; font-weight: 500; }
@@ -55,6 +72,24 @@
     <button class="remove" id="removeFile">✕</button>
   </div>
 
+  <!-- Detection result banner -->
+  <div class="detect-banner" id="detectBanner"></div>
+
+  <!-- Mode selector (only for scanned PDFs converting to DOCX) -->
+  <div class="mode-selector" id="modeSelector">
+    <p>Choose conversion mode</p>
+    <div class="mode-options">
+      <div class="mode-opt active" data-mode="image" id="modeImage">
+        <span class="mode-title">🖼️ Image-based</span>
+        <span class="mode-desc">Looks identical to original. Not editable but perfect layout.</span>
+      </div>
+      <div class="mode-opt" data-mode="ocr" id="modeOcr">
+        <span class="mode-title">🔍 OCR (editable)</span>
+        <span class="mode-desc">Extracts text so you can edit it. Layout may not be perfect.</span>
+      </div>
+    </div>
+  </div>
+
   <p class="section-label">Convert to</p>
   <div class="formats" id="formats">
     <div class="fmt" data-fmt="docx"><span class="icon">📝</span><span class="ext">DOCX</span><span class="desc">Word</span></div>
@@ -69,13 +104,16 @@
 </div>
 
 <script>
-  let selectedFile = null, selectedFmt = null;
+  let selectedFile = null, selectedFmt = null, selectedMode = 'image', pdfType = null;
+
   const dropZone = document.getElementById('dropZone');
   const fileInput = document.getElementById('fileInput');
   const fileSelected = document.getElementById('fileSelected');
   const fileName = document.getElementById('fileName');
   const convertBtn = document.getElementById('convertBtn');
   const status = document.getElementById('status');
+  const detectBanner = document.getElementById('detectBanner');
+  const modeSelector = document.getElementById('modeSelector');
 
   dropZone.addEventListener('click', () => fileInput.click());
   dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
@@ -84,15 +122,17 @@
   fileInput.addEventListener('change', e => setFile(e.target.files[0]));
 
   document.getElementById('removeFile').addEventListener('click', () => {
-    selectedFile = null;
+    selectedFile = null; pdfType = null;
     fileInput.value = '';
     fileSelected.style.display = 'none';
     dropZone.style.display = 'block';
+    detectBanner.style.display = 'none';
+    modeSelector.style.display = 'none';
     status.style.display = 'none';
     updateBtn();
   });
 
-  function setFile(f) {
+  async function setFile(f) {
     if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
     if (f.size > 20 * 1024 * 1024) { showStatus('error', '⚠️ File too large. Max size is 20MB.'); return; }
     selectedFile = f;
@@ -100,6 +140,32 @@
     fileSelected.style.display = 'flex';
     dropZone.style.display = 'none';
     status.style.display = 'none';
+    detectBanner.style.display = 'none';
+    modeSelector.style.display = 'none';
+
+    // Auto-detect PDF type
+    showStatus('loading', '🔍 Analyzing your PDF...');
+    const fd = new FormData();
+    fd.append('file', f);
+    try {
+      const res = await fetch('/detect', { method: 'POST', body: fd });
+      const data = await res.json();
+      pdfType = data.type;
+      status.style.display = 'none';
+
+      if (pdfType === 'scanned') {
+        detectBanner.className = 'detect-banner scanned-pdf';
+        detectBanner.innerHTML = '🖼️ <span>This PDF is a <strong>scanned image</strong> — no real text layer detected.</span>';
+        detectBanner.style.display = 'flex';
+      } else {
+        detectBanner.className = 'detect-banner text-pdf';
+        detectBanner.innerHTML = '✅ <span>This PDF has a <strong>real text layer</strong> — conversion will be accurate.</span>';
+        detectBanner.style.display = 'flex';
+      }
+      checkModeSelector();
+    } catch(e) {
+      status.style.display = 'none';
+    }
     updateBtn();
   }
 
@@ -108,17 +174,31 @@
       document.querySelectorAll('.fmt').forEach(e => e.classList.remove('active'));
       el.classList.add('active');
       selectedFmt = el.dataset.fmt;
+      checkModeSelector();
       updateBtn();
+    });
+  });
+
+  function checkModeSelector() {
+    // Show mode selector only for scanned PDFs converting to DOCX
+    if (pdfType === 'scanned' && selectedFmt === 'docx') {
+      modeSelector.style.display = 'block';
+    } else {
+      modeSelector.style.display = 'none';
+    }
+  }
+
+  document.querySelectorAll('.mode-opt').forEach(el => {
+    el.addEventListener('click', () => {
+      document.querySelectorAll('.mode-opt').forEach(e => e.classList.remove('active'));
+      el.classList.add('active');
+      selectedMode = el.dataset.mode;
     });
   });
 
   function updateBtn() {
     convertBtn.disabled = !(selectedFile && selectedFmt);
-    if (selectedFile && selectedFmt) {
-      convertBtn.textContent = `Convert to ${selectedFmt.toUpperCase()}`;
-    } else {
-      convertBtn.textContent = 'Convert file';
-    }
+    convertBtn.textContent = selectedFile && selectedFmt ? `Convert to ${selectedFmt.toUpperCase()}` : 'Convert file';
   }
 
   function showStatus(type, msg) {
@@ -134,21 +214,16 @@
     const fd = new FormData();
     fd.append('file', selectedFile);
     fd.append('format', selectedFmt);
+    fd.append('mode', pdfType === 'text' ? 'native' : selectedMode);
     try {
       const res = await fetch('/convert', { method: 'POST', body: fd });
-      if (!res.ok) {
-        const d = await res.json();
-        showStatus('error', '❌ ' + (d.error || 'Conversion failed. Please try again.'));
-        return;
-      }
+      if (!res.ok) { const d = await res.json(); showStatus('error', '❌ ' + (d.error || 'Conversion failed.')); return; }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      const ext = selectedFmt === 'jpg' && blob.type === 'application/zip' ? 'zip' : selectedFmt;
       a.href = url;
-      a.download = selectedFile.name.replace('.pdf', '.' + ext);
-      document.body.appendChild(a);
-      a.click();
+      a.download = selectedFile.name.replace('.pdf', '.' + selectedFmt);
+      document.body.appendChild(a); a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       showStatus('success', '✅ Done! Your file has been downloaded.');
