@@ -1,0 +1,7 @@
+flask
+pypdf
+pdfplumber
+python-docx
+pdf2image
+pillow
+gunicorn
