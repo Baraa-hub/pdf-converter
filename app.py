@@ -12,14 +12,25 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 def detect_pdf_type(input_path):
-    """Returns 'text' if PDF has real text, 'scanned' if it's image-based"""
+    """Returns 'text', 'scanned', or 'mixed'"""
     try:
         with pdfplumber.open(input_path) as pdf:
+            has_text = False
+            has_images = False
             for page in pdf.pages:
                 text = page.extract_text()
                 if text and len(text.strip()) > 50:
-                    return 'text'
-        return 'scanned'
+                    has_text = True
+                if page.images:
+                    has_images = True
+                if has_text and has_images:
+                    break
+            if has_text and has_images:
+                return 'mixed'
+            elif has_text:
+                return 'text'
+            else:
+                return 'scanned'
     except:
         return 'scanned'
 
