@@ -169,7 +169,26 @@ def convert():
         elif fmt == 'pptx':
             output_filename = f'{base_name}_converted.pptx'
             output_path = os.path.join(OUTPUT_FOLDER, output_filename)
-            save_as_pptx_images(images, output_path, uid)
+            if mode == 'ocr':
+                from pptx import Presentation
+                from pptx.util import Inches, Emu
+                pages_text = ocr_images(images)
+                first_img = images[0]
+                slide_w = Inches(10)
+                slide_h = Emu(int(slide_w * first_img.size[1] / first_img.size[0]))
+                prs = Presentation()
+                prs.slide_width = slide_w
+                prs.slide_height = slide_h
+                slide_layout = prs.slide_layouts[1]
+                for i, text in enumerate(pages_text):
+                    slide = prs.slides.add_slide(slide_layout)
+                    slide.shapes.title.text = f'Page {i+1}'
+                    tf = slide.placeholders[1].text_frame
+                    tf.word_wrap = True
+                    tf.text = text[:800] if text.strip() else '(no text detected)'
+                prs.save(output_path)
+            else:
+                save_as_pptx_images(images, output_path, uid)
 
         elif fmt == 'html':
             output_filename = f'{base_name}_converted.html'
