@@ -1,7 +1,6 @@
 from flask import Flask, request, send_file, render_template
-import os, uuid, zipfile
+import os, uuid
 from werkzeug.utils import secure_filename
-from pypdf import PdfReader
 import pdfplumber
 
 app = Flask(__name__)
@@ -32,69 +31,75 @@ def convert():
     output_path = os.path.join(OUTPUT_FOLDER, output_filename)
 
     try:
-        if fmt == 'txt':
+        if fmt == 'html':
             with pdfplumber.open(input_path) as pdf:
-                text = '\n\n'.join(p.extract_text() or '' for p in pdf.pages)
+                pages_html = ''
+                for i, page in enumerate(pdf.pages):
+                    text = page.extract_text() or ''
+                    text_html = text.replace('\n', '<br>')
+                    pages_html += f'<div class="page"><h2>Page {i+1}</h2><p>{text_html}</p></div>'
+            html_content = f'''<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>body{{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:20px}}
+.page{{margin-bottom:40px;padding:20px;border:1px solid #ddd;border-radius:8px}}
+h2{{color:#555;font-size:14px}}</style></head>
+<body>{pages_html}</body></html>'''
             with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(text)
-
-        elif fmt == 'html':
-            with pdfplumber.open(input_path) as pdf:
-                text = '\n'.join(f'<p>{p.extract_text() or ""}</p>' for p in pdf.pages)
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(f'<html><body>{text}</body></html>')
-
-        elif fmt == 'md':
-            with pdfplumber.open(input_path) as pdf:
-                text = '\n\n'.join(p.extract_text() or '' for p in pdf.pages)
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(text)
-
-        elif fmt == 'csv':
-            import csv
-            with pdfplumber.open(input_path) as pdf:
-                rows = []
-                for p in pdf.pages:
-                    tables = p.extract_tables()
-                    for table in tables:
-                        rows.extend(table)
-                if not rows:
-                    text = '\n'.join(p.extract_text() or '' for p in pdf.pages)
-                    rows = [[line] for line in text.split('\n') if line.strip()]
-            with open(output_path, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerows(rows)
-
-        elif fmt == 'json':
-            import json
-            with pdfplumber.open(input_path) as pdf:
-                data = [{'page': i+1, 'text': p.extract_text() or ''} for i, p in enumerate(pdf.pages)]
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
+                f.write(html_content)
 
         elif fmt == 'docx':
             from docx import Document
+            from docx.shared import Pt, Inches
             doc = Document()
+            doc.add_heading('Converted Document', 0)
             with pdfplumber.open(input_path) as pdf:
-                for i, p in enumerate(pdf.pages):
+                for i, page in enumerate(pdf.pages):
                     doc.add_heading(f'Page {i+1}', level=1)
-                    doc.add_paragraph(p.extract_text() or '')
+                    text = page.extract_text() or ''
+                    if text.strip():
+                        for line in text.split('\n'):
+                            if line.strip():
+                                doc.add_paragraph(line)
+                    doc.add_page_break()
             doc.save(output_path)
 
+        elif fmt == 'pptx':
+            from pptx import Presentation
+            from pptx.util import Inches, Pt
+            prs = Presentation()
+            slide_layout = prs.slide_layouts[1]
+            with pdfplumber.open(input_path) as pdf:
+                for i, page in enumerate(pdf.pages):
+                    slide = prs.slides.add_slide(slide_layout)
+                    title = slide.shapes.title
+                    body = slide.placeholders[1]
+                    title.text = f'Page {i+1}'
+                    text = page.extract_text() or ''
+                    tf = body.text_frame
+                    tf.word_wrap = True
+                    tf.text = text[:800] if text else '(no text on this page)'
+            output_filename = f'{base_name}_converted.pptx'
+            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+            prs.save(output_path)
+
         elif fmt in ('jpg', 'png'):
+            import zipfile
             from pdf2image import convert_from_path
-            images = convert_from_path(input_path)
+            images = convert_from_path(input_path, dpi=150)
             if len(images) == 1:
-                images[0].save(output_path, fmt.upper() if fmt == 'png' else 'JPEG')
+                save_fmt = 'PNG' if fmt == 'png' else 'JPEG'
+                images[0].save(output_path, save_fmt)
             else:
-                zip_path = output_path.replace(f'.{fmt}', '.zip')
-                output_filename = output_filename.replace(f'.{fmt}', '.zip')
+                zip_filename = f'{base_name}_converted.zip'
+                zip_path = os.path.join(OUTPUT_FOLDER, zip_filename)
                 with zipfile.ZipFile(zip_path, 'w') as zf:
-                    for i, img in enumerate(images):
-                        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_page{i+1}.{fmt}')
-                        img.save(img_path, fmt.upper() if fmt == 'png' else 'JPEG')
-                        zf.write(img_path, f'page{i+1}.{fmt}')
+                    for idx, img in enumerate(images):
+                        save_fmt = 'PNG' if fmt == 'png' else 'JPEG'
+                        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{idx+1}.{fmt}')
+                        img.save(img_path, save_fmt)
+                        zf.write(img_path, f'page{idx+1}.{fmt}')
                 output_path = zip_path
+                output_filename = zip_filename
 
         else:
             return {'error': 'Unsupported format'}, 400
