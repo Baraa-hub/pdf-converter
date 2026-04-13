@@ -1,5 +1,8 @@
 [phases.setup]
-nixPkgs = ["poppler_utils", "tesseract"]
+nixPkgs = ["tesseract4", "poppler_utils"]
 
 [phases.build]
 cmds = ["pip install -r requirements.txt"]
+
+[start]
+cmd = "gunicorn app:app"
