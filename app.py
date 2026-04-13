@@ -4,6 +4,7 @@ from werkzeug.utils import secure_filename
 from pdf2image import convert_from_path
 import pytesseract
 from PIL import Image
+pytesseract.pytesseract.tesseract_cmd = '/run/current-system/sw/bin/tesseract'
 
 app = Flask(__name__)
 UPLOAD_FOLDER = '/tmp/uploads'
