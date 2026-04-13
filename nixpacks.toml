@@ -1,5 +1,0 @@
-[phases.setup]
-nixPkgs = ["tesseract", "poppler_utils"]
-
-[phases.build]
-cmds = ["pip install -r requirements.txt"]
