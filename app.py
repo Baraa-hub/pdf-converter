@@ -236,7 +236,7 @@ def convert():
             output_path = os.path.join(OUTPUT_FOLDER, output_filename)
             if mode == 'ocr':
                 pages_text = ocr_images(images)
-                save_as_docx_text(pages_text, output_path)
+                save_as_docx_text(input_path, output_path)
             elif mode == 'native':
                 save_as_docx_native(input_path, output_path, uid)
             else:
