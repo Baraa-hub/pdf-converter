@@ -181,7 +181,7 @@
 
   function checkModeSelector() {
     // Show mode selector only for scanned PDFs converting to DOCX
-    if (pdfType === 'scanned' && selectedFmt === 'docx') {
+    if (pdfType === 'scanned' && (selectedFmt === 'docx' || selectedFmt === 'pptx')) {
       modeSelector.style.display = 'block';
     } else {
       modeSelector.style.display = 'none';
