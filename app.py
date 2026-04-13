@@ -95,7 +95,10 @@ def save_as_docx_text(input_path, output_path):
                             para = doc.add_paragraph()
                             para.paragraph_format.space_before = Pt(0)
                             para.paragraph_format.space_after = Pt(2)
-                            run = para.add_run(line)
+                            if is_rtl:
+                        from bidi.algorithm import get_display
+                        line = get_display(line)
+                    run = para.add_run(line)
                             run.font.size = Pt(11)
                 continue
 
@@ -119,6 +122,9 @@ def save_as_docx_text(input_path, output_path):
                         pPr = para._p.get_or_add_pPr()
                         bidi = OxmlElement('w:bidi')
                         pPr.append(bidi)
+                    if is_rtl:
+                        from bidi.algorithm import get_display
+                        line = get_display(line)
                     run = para.add_run(line)
                     run.font.size = Pt(12)
                     if is_rtl:
