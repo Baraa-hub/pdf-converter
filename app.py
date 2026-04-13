@@ -23,7 +23,7 @@ def detect_pdf_type(input_path):
     except:
         return 'scanned'
 
-def pdf_to_images(input_path, dpi=200):
+def pdf_to_images(input_path, dpi=120):
     return convert_from_path(input_path, dpi=dpi)
 
 def ocr_images(images):
@@ -138,7 +138,11 @@ def convert():
     base_name = secure_filename(file.filename).replace('.pdf', '')
 
     try:
-        images = pdf_to_images(input_path)
+        page_count = 0
+        with pdfplumber.open(input_path) as pdf:
+            page_count = len(pdf.pages)
+        dpi = 150 if page_count <= 5 else 100
+        images = pdf_to_images(input_path, dpi=dpi)
 
         if fmt in ('jpg', 'png'):
             save_fmt = 'PNG' if fmt == 'png' else 'JPEG'
