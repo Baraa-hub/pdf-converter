@@ -101,25 +101,30 @@ def save_as_docx_text(input_path, output_path):
 
             # Use native text extraction which handles RTL correctly
             import unicodedata
-            import arabic_reshaper
-            from bidi.algorithm import get_display
 
             native_text = page.extract_text(x_tolerance=3, y_tolerance=3)
             if native_text and native_text.strip():
                 for line in native_text.split('\n'):
                     if not line.strip():
                         continue
+                    import unicodedata
                     is_rtl = any(unicodedata.bidirectional(c) in ('R', 'AL') for c in line if c.strip())
-                    if is_rtl:
-                        reshaped = arabic_reshaper.reshape(line)
-                        line = get_display(reshaped)
                     para = doc.add_paragraph()
                     para.paragraph_format.space_before = Pt(0)
                     para.paragraph_format.space_after = Pt(2)
                     if is_rtl:
-                        para.alignment = 2  # right align
+                        para.alignment = 2
+                        from docx.oxml.ns import qn
+                        from docx.oxml import OxmlElement
+                        pPr = para._p.get_or_add_pPr()
+                        bidi = OxmlElement('w:bidi')
+                        pPr.append(bidi)
                     run = para.add_run(line)
                     run.font.size = Pt(12)
+                    if is_rtl:
+                        rPr = run._r.get_or_add_rPr()
+                        rtl_el = OxmlElement('w:rtl')
+                        rPr.append(rtl_el)
                 continue
 
             # Word-by-word fallback for positioning
