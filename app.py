@@ -12,7 +12,6 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 def detect_pdf_type(input_path):
-    """Returns 'text', 'scanned', or 'mixed'"""
     try:
         with pdfplumber.open(input_path) as pdf:
             has_text = False
@@ -41,6 +40,14 @@ def ocr_images(images):
     import pytesseract
     return [pytesseract.image_to_string(img, lang='eng+ara') for img in images]
 
+def is_rtl_text(text):
+    import unicodedata
+    return any(unicodedata.bidirectional(c) in ('R', 'AL') for c in text if c.strip())
+
+def fix_rtl(line):
+    from bidi.algorithm import get_display
+    return get_display(line)
+
 def save_as_docx_images(images, output_path, uid):
     from docx import Document
     from docx.shared import Inches
@@ -53,10 +60,32 @@ def save_as_docx_images(images, output_path, uid):
         doc.add_picture(img_path, width=Inches(6.5))
     doc.save(output_path)
 
+def add_paragraph_with_text(doc, line, font_size=12):
+    from docx.shared import Pt
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    rtl = is_rtl_text(line)
+    if rtl:
+        line = fix_rtl(line)
+    para = doc.add_paragraph()
+    para.paragraph_format.space_before = Pt(0)
+    para.paragraph_format.space_after = Pt(2)
+    if rtl:
+        para.alignment = 2
+        pPr = para._p.get_or_add_pPr()
+        bidi_el = OxmlElement('w:bidi')
+        pPr.append(bidi_el)
+    run = para.add_run(line)
+    run.font.size = Pt(font_size)
+    if rtl:
+        rPr = run._r.get_or_add_rPr()
+        rtl_el = OxmlElement('w:rtl')
+        rPr.append(rtl_el)
+    return para
+
 def save_as_docx_text(input_path, output_path):
     from docx import Document
     from docx.shared import Pt, Inches
-    import pdfplumber
 
     doc = Document()
 
@@ -84,56 +113,22 @@ def save_as_docx_text(input_path, output_path):
             )
 
             if not words:
-                # Scanned page — fall back to OCR
-                from pdf2image import convert_from_path
                 import pytesseract
-                images = convert_from_path(input_path, dpi=150, first_page=i+1, last_page=i+1)
-                if images:
-                    text = pytesseract.image_to_string(images[0], lang='eng+ara')
+                imgs = convert_from_path(input_path, dpi=150, first_page=i+1, last_page=i+1)
+                if imgs:
+                    text = pytesseract.image_to_string(imgs[0], lang='eng+ara')
                     for line in text.split('\n'):
                         if line.strip():
-                            para = doc.add_paragraph()
-                            para.paragraph_format.space_before = Pt(0)
-                            para.paragraph_format.space_after = Pt(2)
-                            if is_rtl:
-                        from bidi.algorithm import get_display
-                        line = get_display(line)
-                    run = para.add_run(line)
-                            run.font.size = Pt(11)
+                            add_paragraph_with_text(doc, line, font_size=11)
                 continue
-
-            # Use native text extraction which handles RTL correctly
-            import unicodedata
 
             native_text = page.extract_text(x_tolerance=3, y_tolerance=3)
             if native_text and native_text.strip():
                 for line in native_text.split('\n'):
-                    if not line.strip():
-                        continue
-                    import unicodedata
-                    is_rtl = any(unicodedata.bidirectional(c) in ('R', 'AL') for c in line if c.strip())
-                    para = doc.add_paragraph()
-                    para.paragraph_format.space_before = Pt(0)
-                    para.paragraph_format.space_after = Pt(2)
-                    if is_rtl:
-                        para.alignment = 2
-                        from docx.oxml.ns import qn
-                        from docx.oxml import OxmlElement
-                        pPr = para._p.get_or_add_pPr()
-                        bidi = OxmlElement('w:bidi')
-                        pPr.append(bidi)
-                    if is_rtl:
-                        from bidi.algorithm import get_display
-                        line = get_display(line)
-                    run = para.add_run(line)
-                    run.font.size = Pt(12)
-                    if is_rtl:
-                        rPr = run._r.get_or_add_rPr()
-                        rtl_el = OxmlElement('w:rtl')
-                        rPr.append(rtl_el)
+                    if line.strip():
+                        add_paragraph_with_text(doc, line, font_size=12)
                 continue
 
-            # Word-by-word fallback for positioning
             lines = {}
             for word in words:
                 y_key = round(float(word['top']) / 5) * 5
@@ -168,9 +163,8 @@ def save_as_docx_text(input_path, output_path):
 
 def save_as_docx_native(input_path, output_path, uid):
     from docx import Document
-    from docx.shared import Inches
+    doc = Document()
     with pdfplumber.open(input_path) as pdf:
-        doc = Document()
         for i, page in enumerate(pdf.pages):
             if i > 0:
                 doc.add_page_break()
@@ -275,7 +269,6 @@ def convert():
             output_filename = f'{base_name}_converted.docx'
             output_path = os.path.join(OUTPUT_FOLDER, output_filename)
             if mode == 'ocr':
-                pages_text = ocr_images(images)
                 save_as_docx_text(input_path, output_path)
             elif mode == 'native':
                 save_as_docx_native(input_path, output_path, uid)
