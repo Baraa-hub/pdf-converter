@@ -1,8 +1,9 @@
-from flask import Flask, request, send_file, render_template
-import os, uuid, zipfile
+from flask import Flask, request, send_file, render_template, jsonify
+import os, uuid, zipfile, base64
 from werkzeug.utils import secure_filename
 from pdf2image import convert_from_path
 from PIL import Image
+import pdfplumber
 
 app = Flask(__name__)
 UPLOAD_FOLDER = '/tmp/uploads'
@@ -10,12 +11,116 @@ OUTPUT_FOLDER = '/tmp/outputs'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
+def detect_pdf_type(input_path):
+    """Returns 'text' if PDF has real text, 'scanned' if it's image-based"""
+    try:
+        with pdfplumber.open(input_path) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text and len(text.strip()) > 50:
+                    return 'text'
+        return 'scanned'
+    except:
+        return 'scanned'
+
 def pdf_to_images(input_path, dpi=200):
     return convert_from_path(input_path, dpi=dpi)
+
+def ocr_images(images):
+    import pytesseract
+    return [pytesseract.image_to_string(img, lang='eng+ara') for img in images]
+
+def save_as_docx_images(images, output_path, uid):
+    from docx import Document
+    from docx.shared import Inches
+    doc = Document()
+    for i, img in enumerate(images):
+        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
+        img.save(img_path, 'PNG')
+        if i > 0:
+            doc.add_page_break()
+        doc.add_picture(img_path, width=Inches(6.5))
+    doc.save(output_path)
+
+def save_as_docx_text(pages_text, output_path):
+    from docx import Document
+    doc = Document()
+    for i, text in enumerate(pages_text):
+        if i > 0:
+            doc.add_page_break()
+        doc.add_heading(f'Page {i+1}', level=1)
+        for line in text.split('\n'):
+            if line.strip():
+                doc.add_paragraph(line)
+    doc.save(output_path)
+
+def save_as_docx_native(input_path, output_path, uid):
+    from docx import Document
+    from docx.shared import Inches
+    with pdfplumber.open(input_path) as pdf:
+        doc = Document()
+        for i, page in enumerate(pdf.pages):
+            if i > 0:
+                doc.add_page_break()
+            text = page.extract_text() or ''
+            for line in text.split('\n'):
+                if line.strip():
+                    doc.add_paragraph(line)
+    doc.save(output_path)
+
+def save_as_pptx_images(images, output_path, uid):
+    from pptx import Presentation
+    from pptx.util import Inches, Emu
+    first_img = images[0]
+    img_w, img_h = first_img.size
+    slide_w = Inches(10)
+    slide_h = Emu(int(slide_w * img_h / img_w))
+    prs = Presentation()
+    prs.slide_width = slide_w
+    prs.slide_height = slide_h
+    blank_layout = prs.slide_layouts[6]
+    for i, img in enumerate(images):
+        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
+        img.save(img_path, 'PNG')
+        slide = prs.slides.add_slide(blank_layout)
+        slide.shapes.add_picture(img_path, 0, 0, width=slide_w, height=slide_h)
+    prs.save(output_path)
+
+def save_as_html_images(images, output_path, uid):
+    pages_html = ''
+    for i, img in enumerate(images):
+        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
+        img.save(img_path, 'PNG')
+        with open(img_path, 'rb') as f:
+            b64 = base64.b64encode(f.read()).decode()
+        pages_html += f'<div class="page"><img src="data:image/png;base64,{b64}" alt="Page {i+1}"></div>\n'
+    html = f'''<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+body{{margin:0;padding:20px;background:#666;display:flex;flex-direction:column;align-items:center}}
+.page{{margin:10px 0;box-shadow:0 4px 12px rgba(0,0,0,0.4)}}
+.page img{{display:block;max-width:900px;width:100%}}
+</style></head>
+<body>{pages_html}</body></html>'''
+    with open(output_path, 'w') as f:
+        f.write(html)
 
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/detect', methods=['POST'])
+def detect():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file'}), 400
+    file = request.files['file']
+    if not file.filename.endswith('.pdf'):
+        return jsonify({'error': 'Not a PDF'}), 400
+    uid = str(uuid.uuid4())[:8]
+    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
+    file.save(input_path)
+    pdf_type = detect_pdf_type(input_path)
+    return jsonify({'type': pdf_type, 'uid': uid})
 
 @app.route('/convert', methods=['POST'])
 def convert():
@@ -23,6 +128,7 @@ def convert():
         return {'error': 'No file uploaded'}, 400
     file = request.files['file']
     fmt = request.form.get('format', 'jpg').lower()
+    mode = request.form.get('mode', 'image')
     if file.filename == '' or not file.filename.endswith('.pdf'):
         return {'error': 'Please upload a valid PDF'}, 400
 
@@ -50,66 +156,25 @@ def convert():
                         zf.write(img_path, f'page{i+1}.{fmt}')
 
         elif fmt == 'docx':
-            from docx import Document
-            from docx.shared import Inches
             output_filename = f'{base_name}_converted.docx'
             output_path = os.path.join(OUTPUT_FOLDER, output_filename)
-            doc = Document()
-            for i, img in enumerate(images):
-                img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
-                img.save(img_path, 'PNG')
-                section = doc.sections[0] if i == 0 else doc.add_section()
-                section.page_width = doc.sections[0].page_width
-                section.page_height = doc.sections[0].page_height
-                section.top_margin = section.bottom_margin = 914400  # 1 inch
-                section.left_margin = section.right_margin = 914400
-                if i > 0:
-                    doc.add_page_break()
-                doc.add_picture(img_path, width=Inches(6.5))
-            doc.save(output_path)
+            if mode == 'ocr':
+                pages_text = ocr_images(images)
+                save_as_docx_text(pages_text, output_path)
+            elif mode == 'native':
+                save_as_docx_native(input_path, output_path, uid)
+            else:
+                save_as_docx_images(images, output_path, uid)
 
         elif fmt == 'pptx':
-            from pptx import Presentation
-            from pptx.util import Inches, Emu
             output_filename = f'{base_name}_converted.pptx'
             output_path = os.path.join(OUTPUT_FOLDER, output_filename)
-            first_img = images[0]
-            img_w, img_h = first_img.size
-            aspect = img_h / img_w
-            slide_w = Inches(10)
-            slide_h = Emu(int(slide_w * aspect))
-            prs = Presentation()
-            prs.slide_width = slide_w
-            prs.slide_height = slide_h
-            blank_layout = prs.slide_layouts[6]
-            for i, img in enumerate(images):
-                img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
-                img.save(img_path, 'PNG')
-                slide = prs.slides.add_slide(blank_layout)
-                slide.shapes.add_picture(img_path, 0, 0, width=slide_w, height=slide_h)
-            prs.save(output_path)
+            save_as_pptx_images(images, output_path, uid)
 
         elif fmt == 'html':
-            import base64
             output_filename = f'{base_name}_converted.html'
             output_path = os.path.join(OUTPUT_FOLDER, output_filename)
-            pages_html = ''
-            for i, img in enumerate(images):
-                img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
-                img.save(img_path, 'PNG')
-                with open(img_path, 'rb') as f:
-                    b64 = base64.b64encode(f.read()).decode()
-                pages_html += f'<div class="page"><img src="data:image/png;base64,{b64}" alt="Page {i+1}"></div>\n'
-            html = f'''<!DOCTYPE html>
-<html><head><meta charset="UTF-8">
-<style>
-body{{margin:0;padding:20px;background:#666;display:flex;flex-direction:column;align-items:center}}
-.page{{margin:10px 0;box-shadow:0 4px 12px rgba(0,0,0,0.4)}}
-.page img{{display:block;max-width:900px;width:100%}}
-</style></head>
-<body>{pages_html}</body></html>'''
-            with open(output_path, 'w') as f:
-                f.write(html)
+            save_as_html_images(images, output_path, uid)
 
         else:
             return {'error': 'Unsupported format'}, 400
