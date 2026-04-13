@@ -117,6 +117,20 @@ def save_as_docx_text(input_path, output_path):
                 left_indent_inch = first_x / 72
                 para.paragraph_format.left_indent = Inches(min(left_indent_inch, page_width_inch - 0.5))
 
+                import unicodedata
+                line_text = ' '.join(w['text'] for w in line_words)
+                is_rtl = any(unicodedata.bidirectional(c) in ('R', 'AL', 'AN') for c in line_text if c.strip())
+
+                if is_rtl:
+                    from docx.oxml.ns import qn
+                    from docx.oxml import OxmlElement
+                    pPr = para._p.get_or_add_pPr()
+                    bidi = OxmlElement('w:bidi')
+                    pPr.append(bidi)
+                    jc = OxmlElement('w:jc')
+                    jc.set(qn('w:val'), 'right')
+                    pPr.append(jc)
+
                 for word in line_words:
                     run = para.add_run(word['text'] + ' ')
                     try:
@@ -131,6 +145,11 @@ def save_as_docx_text(input_path, output_path):
                             run.font.name = clean
                     except:
                         pass
+                    if is_rtl:
+                        from docx.oxml.ns import qn
+                        rPr = run._r.get_or_add_rPr()
+                        rtl = OxmlElement('w:rtl')
+                        rPr.append(rtl)
 
     doc.save(output_path)
 
