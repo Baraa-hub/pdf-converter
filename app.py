@@ -55,8 +55,7 @@ def save_as_docx_images(images, output_path, uid):
 
 def save_as_docx_text(input_path, output_path):
     from docx import Document
-    from docx.shared import Pt, Inches, Emu
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt, Inches
     import pdfplumber
 
     doc = Document()
@@ -85,7 +84,19 @@ def save_as_docx_text(input_path, output_path):
             )
 
             if not words:
-                doc.add_paragraph('')
+                # Scanned page — fall back to OCR
+                from pdf2image import convert_from_path
+                import pytesseract
+                images = convert_from_path(input_path, dpi=150, first_page=i+1, last_page=i+1)
+                if images:
+                    text = pytesseract.image_to_string(images[0], lang='eng+ara')
+                    for line in text.split('\n'):
+                        if line.strip():
+                            para = doc.add_paragraph()
+                            para.paragraph_format.space_before = Pt(0)
+                            para.paragraph_format.space_after = Pt(2)
+                            run = para.add_run(line)
+                            run.font.size = Pt(11)
                 continue
 
             # Group words into lines by y position
@@ -102,20 +113,17 @@ def save_as_docx_text(input_path, output_path):
                 para.paragraph_format.space_before = Pt(0)
                 para.paragraph_format.space_after = Pt(0)
 
-                # Calculate left indent from x position
                 first_x = float(line_words[0]['x0'])
                 left_indent_inch = first_x / 72
-                para.paragraph_format.left_indent = Inches(left_indent_inch)
+                para.paragraph_format.left_indent = Inches(min(left_indent_inch, page_width_inch - 0.5))
 
                 for word in line_words:
                     run = para.add_run(word['text'] + ' ')
-                    # Font size
                     try:
                         size = float(word.get('size', 12))
                         run.font.size = Pt(max(6, min(size, 72)))
                     except:
                         run.font.size = Pt(12)
-                    # Font name
                     try:
                         fontname = word.get('fontname', '')
                         if fontname:
