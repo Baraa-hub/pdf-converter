@@ -153,7 +153,7 @@ def convert():
         with pdfplumber.open(input_path) as pdf:
             page_count = len(pdf.pages)
         dpi = 150 if page_count <= 5 else 80
-        images = pdf_to_images(input_path, dpi=dpi))
+        images = pdf_to_images(input_path, dpi=dpi)
 
         if fmt in ('jpg', 'png'):
             save_fmt = 'PNG' if fmt == 'png' else 'JPEG'
