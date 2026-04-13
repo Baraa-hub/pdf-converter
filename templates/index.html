@@ -6,132 +6,42 @@
 <title>PDF Converter</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
-  .card { background: white; border-radius: 16px; padding: 40px; max-width: 560px; width: 100%; box-shadow: 0 4px 24px rgba(0,0,0,0.08); }
-  h1 { font-size: 26px; font-weight: 700; color: #111; margin-bottom: 6px; }
-  .subtitle { color: #666; font-size: 15px; margin-bottom: 32px; }
-  .drop-zone { border: 2px dashed #ddd; border-radius: 12px; padding: 40px 20px; text-align: center; cursor: pointer; transition: all 0.2s; background: #fafafa; margin-bottom: 24px; }
-  .drop-zone:hover, .drop-zone.drag-over { border-color: #4f46e5; background: #f0f0ff; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .card { background: white; border-radius: 20px; padding: 44px; max-width: 580px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.10); }
+  h1 { font-size: 28px; font-weight: 800; color: #111; margin-bottom: 6px; }
+  .subtitle { color: #777; font-size: 15px; margin-bottom: 36px; }
+  .drop-zone { border: 2px dashed #d1d5db; border-radius: 14px; padding: 44px 20px; text-align: center; cursor: pointer; transition: all 0.2s; background: #fafafa; margin-bottom: 28px; }
+  .drop-zone:hover, .drop-zone.drag-over { border-color: #6366f1; background: #f5f3ff; }
   .drop-zone input { display: none; }
-  .drop-icon { font-size: 40px; margin-bottom: 12px; }
-  .drop-text { font-size: 16px; font-weight: 500; color: #333; }
-  .drop-hint { font-size: 13px; color: #999; margin-top: 4px; }
-  .file-selected { display: none; align-items: center; gap: 10px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px; padding: 12px 16px; margin-bottom: 24px; }
-  .file-selected span { font-size: 14px; color: #166534; flex: 1; }
-  .remove { background: none; border: none; cursor: pointer; color: #999; font-size: 18px; }
-  label.fmt-label { display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
-  .formats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 28px; }
-  .fmt { border: 1.5px solid #e5e7eb; border-radius: 8px; padding: 10px 6px; text-align: center; cursor: pointer; transition: all 0.15s; }
-  .fmt:hover { border-color: #4f46e5; }
-  .fmt.active { border-color: #4f46e5; background: #eef2ff; }
-  .fmt .ext { font-size: 13px; font-weight: 600; color: #333; display: block; }
-  .fmt .desc { font-size: 10px; color: #888; margin-top: 2px; display: block; }
-  .btn { width: 100%; padding: 14px; background: #4f46e5; color: white; border: none; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+  .drop-icon { font-size: 44px; margin-bottom: 14px; display: block; }
+  .drop-text { font-size: 16px; font-weight: 600; color: #333; }
+  .drop-hint { font-size: 13px; color: #aaa; margin-top: 5px; }
+  .file-selected { display: none; align-items: center; gap: 10px; background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 12px; padding: 14px 18px; margin-bottom: 28px; }
+  .file-selected .fname { font-size: 14px; color: #166534; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .remove { background: none; border: none; cursor: pointer; color: #aaa; font-size: 20px; line-height: 1; }
+  .section-label { font-size: 12px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 12px; }
+  .formats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 32px; }
+  .fmt { border: 1.5px solid #e5e7eb; border-radius: 12px; padding: 14px 6px; text-align: center; cursor: pointer; transition: all 0.15s; background: #fafafa; }
+  .fmt:hover { border-color: #6366f1; background: #f5f3ff; }
+  .fmt.active { border-color: #6366f1; background: #eef2ff; }
+  .fmt .icon { font-size: 22px; display: block; margin-bottom: 6px; }
+  .fmt .ext { font-size: 13px; font-weight: 700; color: #333; display: block; }
+  .fmt .desc { font-size: 10px; color: #999; margin-top: 3px; display: block; }
+  .fmt.active .ext { color: #4f46e5; }
+  .btn { width: 100%; padding: 15px; background: #4f46e5; color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer; transition: background 0.2s; letter-spacing: 0.01em; }
   .btn:hover:not(:disabled) { background: #4338ca; }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .status { display: none; margin-top: 16px; padding: 14px 16px; border-radius: 10px; font-size: 14px; }
-  .status.loading { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
-  .status.error { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .status { display: none; margin-top: 18px; padding: 14px 18px; border-radius: 12px; font-size: 14px; font-weight: 500; }
+  .status.loading { background: #eff6ff; color: #1d4ed8; border: 1.5px solid #bfdbfe; }
+  .status.error { background: #fef2f2; color: #991b1b; border: 1.5px solid #fecaca; }
+  .status.success { background: #f0fdf4; color: #166534; border: 1.5px solid #86efac; }
 </style>
 </head>
 <body>
 <div class="card">
   <h1>PDF Converter</h1>
-  <p class="subtitle">Upload a PDF and convert it to any format instantly</p>
+  <p class="subtitle">Convert your PDF to Word, PowerPoint, HTML, or images instantly</p>
 
   <div class="drop-zone" id="dropZone">
     <input type="file" id="fileInput" accept=".pdf">
-    <div class="drop-icon">📄</div>
-    <div class="drop-text">Drop your PDF here or click to browse</div>
-    <div class="drop-hint">PDF files only</div>
-  </div>
-
-  <div class="file-selected" id="fileSelected">
-    <span>✅ </span><span id="fileName"></span>
-    <button class="remove" id="removeFile">✕</button>
-  </div>
-
-  <label class="fmt-label">Convert to</label>
-  <div class="formats" id="formats">
-    <div class="fmt" data-fmt="txt"><span class="ext">TXT</span><span class="desc">Plain text</span></div>
-    <div class="fmt" data-fmt="html"><span class="ext">HTML</span><span class="desc">Web page</span></div>
-    <div class="fmt" data-fmt="md"><span class="ext">MD</span><span class="desc">Markdown</span></div>
-    <div class="fmt" data-fmt="csv"><span class="ext">CSV</span><span class="desc">Spreadsheet</span></div>
-    <div class="fmt" data-fmt="json"><span class="ext">JSON</span><span class="desc">JSON data</span></div>
-    <div class="fmt" data-fmt="docx"><span class="ext">DOCX</span><span class="desc">Word doc</span></div>
-    <div class="fmt" data-fmt="jpg"><span class="ext">JPG</span><span class="desc">Image</span></div>
-    <div class="fmt" data-fmt="png"><span class="ext">PNG</span><span class="desc">Image</span></div>
-  </div>
-
-  <button class="btn" id="convertBtn" disabled>Convert file</button>
-  <div class="status" id="status"></div>
-</div>
-
-<script>
-  let selectedFile = null, selectedFmt = null;
-  const dropZone = document.getElementById('dropZone');
-  const fileInput = document.getElementById('fileInput');
-  const fileSelected = document.getElementById('fileSelected');
-  const fileName = document.getElementById('fileName');
-  const convertBtn = document.getElementById('convertBtn');
-  const status = document.getElementById('status');
-
-  dropZone.addEventListener('click', () => fileInput.click());
-  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-  dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); setFile(e.dataTransfer.files[0]); });
-  fileInput.addEventListener('change', e => setFile(e.target.files[0]));
-  document.getElementById('removeFile').addEventListener('click', () => { selectedFile = null; fileSelected.style.display = 'none'; dropZone.style.display = 'block'; updateBtn(); });
-
-  function setFile(f) {
-    if (!f || !f.name.endsWith('.pdf')) { showStatus('error', 'Please upload a PDF file.'); return; }
-    selectedFile = f;
-    fileName.textContent = f.name;
-    fileSelected.style.display = 'flex';
-    dropZone.style.display = 'none';
-    status.style.display = 'none';
-    updateBtn();
-  }
-
-  document.querySelectorAll('.fmt').forEach(el => {
-    el.addEventListener('click', () => {
-      document.querySelectorAll('.fmt').forEach(e => e.classList.remove('active'));
-      el.classList.add('active');
-      selectedFmt = el.dataset.fmt;
-      updateBtn();
-    });
-  });
-
-  function updateBtn() { convertBtn.disabled = !(selectedFile && selectedFmt); }
-
-  function showStatus(type, msg) {
-    status.className = 'status ' + type;
-    status.style.display = 'block';
-    status.textContent = msg;
-  }
-
-  convertBtn.addEventListener('click', async () => {
-    if (!selectedFile || !selectedFmt) return;
-    showStatus('loading', 'Converting... please wait ⏳');
-    convertBtn.disabled = true;
-    const fd = new FormData();
-    fd.append('file', selectedFile);
-    fd.append('format', selectedFmt);
-    try {
-      const res = await fetch('/convert', { method: 'POST', body: fd });
-      if (!res.ok) { const d = await res.json(); showStatus('error', d.error || 'Conversion failed.'); return; }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = selectedFile.name.replace('.pdf', '.' + selectedFmt);
-      a.click(); URL.revokeObjectURL(url);
-      status.style.display = 'none';
-    } catch(e) {
-      showStatus('error', 'Something went wrong. Please try again.');
-    } finally {
-      convertBtn.disabled = false;
-    }
-  });
-</script>
-</body>
-</html>
+    <span class="drop-icon">📄</span>
