@@ -7,3 +7,5 @@ pdf2image
 pillow
 gunicorn
 pytesseract
+arabic-reshaper
+python-bidi
