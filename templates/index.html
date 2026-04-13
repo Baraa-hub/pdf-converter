@@ -45,3 +45,120 @@
   <div class="drop-zone" id="dropZone">
     <input type="file" id="fileInput" accept=".pdf">
     <span class="drop-icon">📄</span>
+    <div class="drop-text">Drop your PDF here or click to browse</div>
+    <div class="drop-hint">PDF files only • Max 20MB</div>
+  </div>
+
+  <div class="file-selected" id="fileSelected">
+    <span>✅</span>
+    <span class="fname" id="fileName"></span>
+    <button class="remove" id="removeFile">✕</button>
+  </div>
+
+  <p class="section-label">Convert to</p>
+  <div class="formats" id="formats">
+    <div class="fmt" data-fmt="docx"><span class="icon">📝</span><span class="ext">DOCX</span><span class="desc">Word</span></div>
+    <div class="fmt" data-fmt="pptx"><span class="icon">📊</span><span class="ext">PPTX</span><span class="desc">PowerPoint</span></div>
+    <div class="fmt" data-fmt="html"><span class="icon">🌐</span><span class="ext">HTML</span><span class="desc">Webpage</span></div>
+    <div class="fmt" data-fmt="jpg"><span class="icon">🖼️</span><span class="ext">JPG</span><span class="desc">Image</span></div>
+    <div class="fmt" data-fmt="png"><span class="icon">🎨</span><span class="ext">PNG</span><span class="desc">Image</span></div>
+  </div>
+
+  <button class="btn" id="convertBtn" disabled>Convert file</button>
+  <div class="status" id="status"></div>
+</div>
+
+<script>
+  let selectedFile = null, selectedFmt = null;
+  const dropZone = document.getElementById('dropZone');
+  const fileInput = document.getElementById('fileInput');
+  const fileSelected = document.getElementById('fileSelected');
+  const fileName = document.getElementById('fileName');
+  const convertBtn = document.getElementById('convertBtn');
+  const status = document.getElementById('status');
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); setFile(e.dataTransfer.files[0]); });
+  fileInput.addEventListener('change', e => setFile(e.target.files[0]));
+
+  document.getElementById('removeFile').addEventListener('click', () => {
+    selectedFile = null;
+    fileInput.value = '';
+    fileSelected.style.display = 'none';
+    dropZone.style.display = 'block';
+    status.style.display = 'none';
+    updateBtn();
+  });
+
+  function setFile(f) {
+    if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
+    if (f.size > 20 * 1024 * 1024) { showStatus('error', '⚠️ File too large. Max size is 20MB.'); return; }
+    selectedFile = f;
+    fileName.textContent = f.name;
+    fileSelected.style.display = 'flex';
+    dropZone.style.display = 'none';
+    status.style.display = 'none';
+    updateBtn();
+  }
+
+  document.querySelectorAll('.fmt').forEach(el => {
+    el.addEventListener('click', () => {
+      document.querySelectorAll('.fmt').forEach(e => e.classList.remove('active'));
+      el.classList.add('active');
+      selectedFmt = el.dataset.fmt;
+      updateBtn();
+    });
+  });
+
+  function updateBtn() {
+    convertBtn.disabled = !(selectedFile && selectedFmt);
+    if (selectedFile && selectedFmt) {
+      convertBtn.textContent = `Convert to ${selectedFmt.toUpperCase()}`;
+    } else {
+      convertBtn.textContent = 'Convert file';
+    }
+  }
+
+  function showStatus(type, msg) {
+    status.className = 'status ' + type;
+    status.style.display = 'block';
+    status.textContent = msg;
+  }
+
+  convertBtn.addEventListener('click', async () => {
+    if (!selectedFile || !selectedFmt) return;
+    showStatus('loading', '⏳ Converting your file, please wait...');
+    convertBtn.disabled = true;
+    const fd = new FormData();
+    fd.append('file', selectedFile);
+    fd.append('format', selectedFmt);
+    try {
+      const res = await fetch('/convert', { method: 'POST', body: fd });
+      if (!res.ok) {
+        const d = await res.json();
+        showStatus('error', '❌ ' + (d.error || 'Conversion failed. Please try again.'));
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const ext = selectedFmt === 'jpg' && blob.type === 'application/zip' ? 'zip' : selectedFmt;
+      a.href = url;
+      a.download = selectedFile.name.replace('.pdf', '.' + ext);
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showStatus('success', '✅ Done! Your file has been downloaded.');
+    } catch(e) {
+      showStatus('error', '❌ Something went wrong. Please try again.');
+    } finally {
+      convertBtn.disabled = false;
+      updateBtn();
+    }
+  });
+</script>
+</body>
+</html>
