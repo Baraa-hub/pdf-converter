@@ -70,10 +70,10 @@ def save_as_docx_text(input_path, output_path):
             page_height_inch = float(page.height) / 72
             section.page_width = Inches(page_width_inch)
             section.page_height = Inches(page_height_inch)
-            section.top_margin = Inches(0)
-            section.bottom_margin = Inches(0)
-            section.left_margin = Inches(0)
-            section.right_margin = Inches(0)
+            section.top_margin = Inches(0.75)
+            section.bottom_margin = Inches(0.75)
+            section.left_margin = Inches(0.75)
+            section.right_margin = Inches(0.75)
 
             words = page.extract_words(
                 x_tolerance=3,
@@ -114,8 +114,8 @@ def save_as_docx_text(input_path, output_path):
                 para.paragraph_format.space_after = Pt(0)
 
                 first_x = float(line_words[0]['x0'])
-                left_indent_inch = first_x / 72
-                para.paragraph_format.left_indent = Inches(min(left_indent_inch, page_width_inch - 0.5))
+                left_indent_inch = max(0, (first_x / 72) - 0.75)
+                para.paragraph_format.left_indent = Inches(min(left_indent_inch, page_width_inch - 1.5))
 
                 for word in line_words:
                     run = para.add_run(word['text'] + ' ')
