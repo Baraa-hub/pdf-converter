@@ -99,7 +99,19 @@ def save_as_docx_text(input_path, output_path):
                             run.font.size = Pt(11)
                 continue
 
-            # Group words into lines by y position
+            # Use native text extraction which handles RTL correctly
+            native_text = page.extract_text(x_tolerance=3, y_tolerance=3)
+            if native_text and native_text.strip():
+                for line in native_text.split('\n'):
+                    if line.strip():
+                        para = doc.add_paragraph()
+                        para.paragraph_format.space_before = Pt(0)
+                        para.paragraph_format.space_after = Pt(2)
+                        run = para.add_run(line)
+                        run.font.size = Pt(12)
+                continue
+
+            # Word-by-word fallback for positioning
             lines = {}
             for word in words:
                 y_key = round(float(word['top']) / 5) * 5
@@ -109,19 +121,12 @@ def save_as_docx_text(input_path, output_path):
 
             for y_key in sorted(lines.keys()):
                 line_words = sorted(lines[y_key], key=lambda w: float(w['x0']))
-                import unicodedata
-                line_text = ' '.join(w['text'] for w in line_words)
-                is_rtl = any(unicodedata.bidirectional(c) in ('R', 'AL') for c in line_text if c.strip())
-                if is_rtl:
-                    line_words = list(reversed(line_words))
                 para = doc.add_paragraph()
                 para.paragraph_format.space_before = Pt(0)
                 para.paragraph_format.space_after = Pt(0)
-
                 first_x = float(line_words[0]['x0'])
                 left_indent_inch = max(0, (first_x / 72) - 0.75)
                 para.paragraph_format.left_indent = Inches(min(left_indent_inch, page_width_inch - 1.5))
-
                 for word in line_words:
                     run = para.add_run(word['text'] + ' ')
                     try:
