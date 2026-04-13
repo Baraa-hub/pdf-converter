@@ -53,16 +53,77 @@ def save_as_docx_images(images, output_path, uid):
         doc.add_picture(img_path, width=Inches(6.5))
     doc.save(output_path)
 
-def save_as_docx_text(pages_text, output_path):
+def save_as_docx_text(input_path, output_path):
     from docx import Document
+    from docx.shared import Pt, Inches, Emu
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    import pdfplumber
+
     doc = Document()
-    for i, text in enumerate(pages_text):
-        if i > 0:
-            doc.add_page_break()
-        doc.add_heading(f'Page {i+1}', level=1)
-        for line in text.split('\n'):
-            if line.strip():
-                doc.add_paragraph(line)
+
+    with pdfplumber.open(input_path) as pdf:
+        for i, page in enumerate(pdf.pages):
+            if i > 0:
+                doc.add_page_break()
+
+            section = doc.sections[-1]
+            page_width_inch = float(page.width) / 72
+            page_height_inch = float(page.height) / 72
+            section.page_width = Inches(page_width_inch)
+            section.page_height = Inches(page_height_inch)
+            section.top_margin = Inches(0)
+            section.bottom_margin = Inches(0)
+            section.left_margin = Inches(0)
+            section.right_margin = Inches(0)
+
+            words = page.extract_words(
+                x_tolerance=3,
+                y_tolerance=3,
+                keep_blank_chars=False,
+                use_text_flow=False,
+                extra_attrs=["fontname", "size"]
+            )
+
+            if not words:
+                doc.add_paragraph('')
+                continue
+
+            # Group words into lines by y position
+            lines = {}
+            for word in words:
+                y_key = round(float(word['top']) / 5) * 5
+                if y_key not in lines:
+                    lines[y_key] = []
+                lines[y_key].append(word)
+
+            for y_key in sorted(lines.keys()):
+                line_words = sorted(lines[y_key], key=lambda w: float(w['x0']))
+                para = doc.add_paragraph()
+                para.paragraph_format.space_before = Pt(0)
+                para.paragraph_format.space_after = Pt(0)
+
+                # Calculate left indent from x position
+                first_x = float(line_words[0]['x0'])
+                left_indent_inch = first_x / 72
+                para.paragraph_format.left_indent = Inches(left_indent_inch)
+
+                for word in line_words:
+                    run = para.add_run(word['text'] + ' ')
+                    # Font size
+                    try:
+                        size = float(word.get('size', 12))
+                        run.font.size = Pt(max(6, min(size, 72)))
+                    except:
+                        run.font.size = Pt(12)
+                    # Font name
+                    try:
+                        fontname = word.get('fontname', '')
+                        if fontname:
+                            clean = fontname.split('+')[-1].split('-')[0]
+                            run.font.name = clean
+                    except:
+                        pass
+
     doc.save(output_path)
 
 def save_as_docx_native(input_path, output_path, uid):
