@@ -109,6 +109,11 @@ def save_as_docx_text(input_path, output_path):
 
             for y_key in sorted(lines.keys()):
                 line_words = sorted(lines[y_key], key=lambda w: float(w['x0']))
+                import unicodedata
+                line_text = ' '.join(w['text'] for w in line_words)
+                is_rtl = any(unicodedata.bidirectional(c) in ('R', 'AL') for c in line_text if c.strip())
+                if is_rtl:
+                    line_words = list(reversed(line_words))
                 para = doc.add_paragraph()
                 para.paragraph_format.space_before = Pt(0)
                 para.paragraph_format.space_after = Pt(0)
