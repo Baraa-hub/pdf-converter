@@ -6,4 +6,4 @@ python-pptx
 pdf2image
 pillow
 gunicorn
-poppler-utils
+pytesseract
