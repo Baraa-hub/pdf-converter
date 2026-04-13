@@ -1,10 +1,8 @@
 from flask import Flask, request, send_file, render_template
-import os, uuid
+import os, uuid, zipfile
 from werkzeug.utils import secure_filename
 from pdf2image import convert_from_path
-import pytesseract
 from PIL import Image
-pytesseract.pytesseract.tesseract_cmd = 'tesseract'
 
 app = Flask(__name__)
 UPLOAD_FOLDER = '/tmp/uploads'
@@ -12,15 +10,8 @@ OUTPUT_FOLDER = '/tmp/outputs'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-def pdf_to_images(input_path):
-    return convert_from_path(input_path, dpi=200)
-
-def extract_text_ocr(images):
-    full_text = []
-    for img in images:
-        text = pytesseract.image_to_string(img, lang='eng+ara')
-        full_text.append(text)
-    return full_text
+def pdf_to_images(input_path, dpi=200):
+    return convert_from_path(input_path, dpi=dpi)
 
 @app.route('/')
 def index():
@@ -31,87 +22,94 @@ def convert():
     if 'file' not in request.files:
         return {'error': 'No file uploaded'}, 400
     file = request.files['file']
-    fmt = request.form.get('format', 'txt').lower()
+    fmt = request.form.get('format', 'jpg').lower()
     if file.filename == '' or not file.filename.endswith('.pdf'):
         return {'error': 'Please upload a valid PDF'}, 400
 
     uid = str(uuid.uuid4())[:8]
     input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
     file.save(input_path)
-
     base_name = secure_filename(file.filename).replace('.pdf', '')
-    output_filename = f'{base_name}_converted.{fmt}'
-    output_path = os.path.join(OUTPUT_FOLDER, output_filename)
 
     try:
+        images = pdf_to_images(input_path)
+
         if fmt in ('jpg', 'png'):
-            images = pdf_to_images(input_path)
+            save_fmt = 'PNG' if fmt == 'png' else 'JPEG'
             if len(images) == 1:
-                save_fmt = 'PNG' if fmt == 'png' else 'JPEG'
+                output_filename = f'{base_name}_converted.{fmt}'
+                output_path = os.path.join(OUTPUT_FOLDER, output_filename)
                 images[0].save(output_path, save_fmt)
             else:
-                import zipfile
-                zip_filename = f'{base_name}_converted.zip'
-                zip_path = os.path.join(OUTPUT_FOLDER, zip_filename)
-                with zipfile.ZipFile(zip_path, 'w') as zf:
-                    for idx, img in enumerate(images):
-                        save_fmt = 'PNG' if fmt == 'png' else 'JPEG'
-                        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{idx+1}.{fmt}')
+                output_filename = f'{base_name}_converted.zip'
+                output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+                with zipfile.ZipFile(output_path, 'w') as zf:
+                    for i, img in enumerate(images):
+                        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.{fmt}')
                         img.save(img_path, save_fmt)
-                        zf.write(img_path, f'page{idx+1}.{fmt}')
-                output_path = zip_path
-                output_filename = zip_filename
-
-        elif fmt == 'html':
-            images = pdf_to_images(input_path)
-            pages_text = extract_text_ocr(images)
-            pages_html = ''
-            for i, text in enumerate(pages_text):
-                text_html = text.replace('\n', '<br>')
-                pages_html += f'<div class="page"><h2>Page {i+1}</h2><p>{text_html}</p></div>'
-            html_content = f'''<!DOCTYPE html>
-<html><head><meta charset="UTF-8">
-<style>
-body{{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:20px}}
-.page{{margin-bottom:40px;padding:20px;border:1px solid #ddd;border-radius:8px}}
-h2{{color:#555;font-size:14px}}
-</style></head>
-<body>{pages_html}</body></html>'''
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(html_content)
+                        zf.write(img_path, f'page{i+1}.{fmt}')
 
         elif fmt == 'docx':
             from docx import Document
-            images = pdf_to_images(input_path)
-            pages_text = extract_text_ocr(images)
+            from docx.shared import Inches
+            output_filename = f'{base_name}_converted.docx'
+            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
             doc = Document()
-            doc.add_heading('Converted Document', 0)
-            for i, text in enumerate(pages_text):
-                doc.add_heading(f'Page {i+1}', level=1)
-                for line in text.split('\n'):
-                    if line.strip():
-                        doc.add_paragraph(line)
-                doc.add_page_break()
+            for i, img in enumerate(images):
+                img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
+                img.save(img_path, 'PNG')
+                section = doc.sections[0] if i == 0 else doc.add_section()
+                section.page_width = doc.sections[0].page_width
+                section.page_height = doc.sections[0].page_height
+                section.top_margin = section.bottom_margin = 914400  # 1 inch
+                section.left_margin = section.right_margin = 914400
+                if i > 0:
+                    doc.add_page_break()
+                doc.add_picture(img_path, width=Inches(6.5))
             doc.save(output_path)
 
         elif fmt == 'pptx':
             from pptx import Presentation
-            from pptx.util import Pt
-            images = pdf_to_images(input_path)
-            pages_text = extract_text_ocr(images)
-            prs = Presentation()
-            slide_layout = prs.slide_layouts[1]
-            for i, text in enumerate(pages_text):
-                slide = prs.slides.add_slide(slide_layout)
-                title = slide.shapes.title
-                body = slide.placeholders[1]
-                title.text = f'Page {i+1}'
-                tf = body.text_frame
-                tf.word_wrap = True
-                tf.text = text[:800] if text.strip() else '(no text detected)'
+            from pptx.util import Inches, Emu
             output_filename = f'{base_name}_converted.pptx'
             output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+            first_img = images[0]
+            img_w, img_h = first_img.size
+            aspect = img_h / img_w
+            slide_w = Inches(10)
+            slide_h = Emu(int(slide_w * aspect))
+            prs = Presentation()
+            prs.slide_width = slide_w
+            prs.slide_height = slide_h
+            blank_layout = prs.slide_layouts[6]
+            for i, img in enumerate(images):
+                img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
+                img.save(img_path, 'PNG')
+                slide = prs.slides.add_slide(blank_layout)
+                slide.shapes.add_picture(img_path, 0, 0, width=slide_w, height=slide_h)
             prs.save(output_path)
+
+        elif fmt == 'html':
+            import base64
+            output_filename = f'{base_name}_converted.html'
+            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+            pages_html = ''
+            for i, img in enumerate(images):
+                img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
+                img.save(img_path, 'PNG')
+                with open(img_path, 'rb') as f:
+                    b64 = base64.b64encode(f.read()).decode()
+                pages_html += f'<div class="page"><img src="data:image/png;base64,{b64}" alt="Page {i+1}"></div>\n'
+            html = f'''<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+body{{margin:0;padding:20px;background:#666;display:flex;flex-direction:column;align-items:center}}
+.page{{margin:10px 0;box-shadow:0 4px 12px rgba(0,0,0,0.4)}}
+.page img{{display:block;max-width:900px;width:100%}}
+</style></head>
+<body>{pages_html}</body></html>'''
+            with open(output_path, 'w') as f:
+                f.write(html)
 
         else:
             return {'error': 'Unsupported format'}, 400
@@ -125,5 +123,5 @@ h2{{color:#555;font-size:14px}}
             os.remove(input_path)
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
