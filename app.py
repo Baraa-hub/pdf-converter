@@ -226,7 +226,9 @@ def detect():
     input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
     file.save(input_path)
     pdf_type = detect_pdf_type(input_path)
-    return jsonify({'type': pdf_type, 'uid': uid})
+    with pdfplumber.open(input_path) as pdf:
+        page_count = len(pdf.pages)
+    return jsonify({'type': pdf_type, 'uid': uid, 'page_count': page_count})
 
 @app.route('/convert', methods=['POST'])
 def convert():
@@ -252,15 +254,38 @@ def convert():
 
         if fmt in ('jpg', 'png'):
             save_fmt = 'PNG' if fmt == 'png' else 'JPEG'
-            if len(images) == 1:
+
+            # Parse pages parameter
+            pages_param = request.form.get('pages', '').strip()
+            selected_indices = []
+            if pages_param:
+                for part in pages_param.split(','):
+                    part = part.strip()
+                    if '-' in part:
+                        try:
+                            start, end = part.split('-')
+                            selected_indices += list(range(int(start)-1, int(end)))
+                        except:
+                            pass
+                    else:
+                        try:
+                            selected_indices.append(int(part)-1)
+                        except:
+                            pass
+                selected_indices = [i for i in selected_indices if 0 <= i < len(images)]
+                selected_images = [images[i] for i in selected_indices]
+            else:
+                selected_images = images
+
+            if len(selected_images) == 1:
                 output_filename = f'{base_name}_converted.{fmt}'
                 output_path = os.path.join(OUTPUT_FOLDER, output_filename)
-                images[0].save(output_path, save_fmt)
+                selected_images[0].save(output_path, save_fmt)
             else:
                 output_filename = f'{base_name}_converted.zip'
                 output_path = os.path.join(OUTPUT_FOLDER, output_filename)
                 with zipfile.ZipFile(output_path, 'w') as zf:
-                    for i, img in enumerate(images):
+                    for i, img in enumerate(selected_images):
                         img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.{fmt}')
                         img.save(img_path, save_fmt)
                         zf.write(img_path, f'page{i+1}.{fmt}')
