@@ -5,7 +5,7 @@ from pdf2image import convert_from_path
 from PIL import Image
 import pdfplumber
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static')
 UPLOAD_FOLDER = '/tmp/uploads'
 OUTPUT_FOLDER = '/tmp/outputs'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
