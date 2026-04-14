@@ -33,8 +33,8 @@ def detect_pdf_type(input_path):
     except:
         return 'scanned'
 
-def pdf_to_images(input_path, dpi=120):
-    return convert_from_path(input_path, dpi=dpi, thread_count=1, use_cropbox=True, strict=False)
+def pdf_to_images(input_path, dpi=120, fmt='png'):
+    return convert_from_path(input_path, dpi=dpi, thread_count=1, use_cropbox=True, strict=False, output_folder=OUTPUT_FOLDER, fmt=fmt)
 
 def ocr_images(images):
     import pytesseract
@@ -250,7 +250,7 @@ def convert():
         with pdfplumber.open(input_path) as pdf:
             page_count = len(pdf.pages)
         dpi = 150 if page_count <= 5 else 80
-        images = pdf_to_images(input_path, dpi=dpi)
+        images = pdf_to_images(input_path, dpi=dpi, fmt=fmt if fmt in ('jpg', 'png') else 'png')
 
         if fmt in ('jpg', 'png'):
             save_fmt = 'PNG' if fmt == 'png' else 'JPEG'
