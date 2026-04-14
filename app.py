@@ -34,8 +34,7 @@ def detect_pdf_type(input_path):
         return 'scanned'
 
 def pdf_to_images(input_path, dpi=120):
-    images = convert_from_path(input_path, dpi=dpi, thread_count=1, use_cropbox=True, strict=False)
-    return images
+    return convert_from_path(input_path, dpi=dpi, thread_count=1, use_cropbox=True, strict=False)
 
 def ocr_images(images):
     import pytesseract
@@ -49,13 +48,32 @@ def fix_rtl(line):
     from bidi.algorithm import get_display
     return get_display(line)
 
+def save_image_file(img, path, save_fmt):
+    """Save a PIL image to path, handling all format/mode conversions."""
+    img = img.copy()
+    if save_fmt == 'JPEG':
+        if img.mode in ('RGBA', 'LA', 'P'):
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            if img.mode == 'P':
+                img = img.convert('RGBA')
+            if img.mode in ('RGBA', 'LA'):
+                background.paste(img, mask=img.split()[-1])
+            img = background
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+        img.save(path, 'JPEG', quality=95)
+    else:
+        if img.mode not in ('RGB', 'RGBA'):
+            img = img.convert('RGB')
+        img.save(path, 'PNG')
+
 def save_as_docx_images(images, output_path, uid):
     from docx import Document
     from docx.shared import Inches
     doc = Document()
     for i, img in enumerate(images):
         img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
-        img.save(img_path, 'PNG')
+        save_image_file(img, img_path, 'PNG')
         if i > 0:
             doc.add_page_break()
         doc.add_picture(img_path, width=Inches(6.5))
@@ -188,7 +206,7 @@ def save_as_pptx_images(images, output_path, uid):
     blank_layout = prs.slide_layouts[6]
     for i, img in enumerate(images):
         img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
-        img.save(img_path, 'PNG')
+        save_image_file(img, img_path, 'PNG')
         slide = prs.slides.add_slide(blank_layout)
         slide.shapes.add_picture(img_path, 0, 0, width=slide_w, height=slide_h)
     prs.save(output_path)
@@ -197,7 +215,7 @@ def save_as_html_images(images, output_path, uid):
     pages_html = ''
     for i, img in enumerate(images):
         img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
-        img.save(img_path, 'PNG')
+        save_image_file(img, img_path, 'PNG')
         with open(img_path, 'rb') as f:
             b64 = base64.b64encode(f.read()).decode()
         pages_html += f'<div class="page"><img src="data:image/png;base64,{b64}" alt="Page {i+1}"></div>\n'
@@ -211,6 +229,26 @@ body{{margin:0;padding:20px;background:#666;display:flex;flex-direction:column;a
 <body>{pages_html}</body></html>'''
     with open(output_path, 'w') as f:
         f.write(html)
+
+def parse_pages(pages_param, total):
+    """Parse pages string like '1,3,5-7' into 0-based indices."""
+    indices = []
+    for part in pages_param.split(','):
+        part = part.strip()
+        if '-' in part:
+            try:
+                parts = part.split('-')
+                start = int(parts[0].strip())
+                end = int(parts[1].strip())
+                indices += list(range(start - 1, end))
+            except:
+                pass
+        else:
+            try:
+                indices.append(int(part) - 1)
+            except:
+                pass
+    return sorted(set([i for i in indices if 0 <= i < total]))
 
 @app.route('/')
 def index():
@@ -253,50 +291,37 @@ def convert():
         images = pdf_to_images(input_path, dpi=dpi)
 
         if fmt in ('jpg', 'png'):
-            save_fmt = 'PNG' if fmt == 'png' else 'JPEG'
+            save_fmt = 'JPEG' if fmt == 'jpg' else 'PNG'
             ext = fmt
 
+            # Parse selected pages
             pages_param = request.form.get('pages', '').strip()
-            selected_indices = []
             if pages_param:
-                for part in pages_param.split(','):
-                    part = part.strip()
-                    if '-' in part:
-                        try:
-                            start, end = part.split('-')
-                            selected_indices += list(range(int(start)-1, int(end)))
-                        except:
-                            pass
-                    else:
-                        try:
-                            selected_indices.append(int(part)-1)
-                        except:
-                            pass
-                selected_indices = [i for i in selected_indices if 0 <= i < len(images)]
+                selected_indices = parse_pages(pages_param, len(images))
+                if not selected_indices:
+                    return jsonify({'error': 'No valid pages selected. Use format like: 1, 3, 5-7'}), 400
                 selected_images = [images[i] for i in selected_indices]
             else:
                 selected_images = images
 
-            if not selected_images:
-                return jsonify({'error': 'No valid pages selected'}), 400
-
+            # Single image → direct download
             if len(selected_images) == 1:
                 output_filename = f'{base_name}_converted.{ext}'
                 output_path = os.path.join(OUTPUT_FOLDER, output_filename)
-                img = selected_images[0]
-                if save_fmt == 'JPEG':
-                    img = img.convert('RGB')
-                img.save(output_path, save_fmt)
+                save_image_file(selected_images[0], output_path, save_fmt)
+
+            # Multiple images → ZIP
             else:
                 output_filename = f'{base_name}_converted.zip'
                 output_path = os.path.join(OUTPUT_FOLDER, output_filename)
-                with zipfile.ZipFile(output_path, 'w') as zf:
-                    for i, img in enumerate(selected_images):
-                        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.{ext}')
-                        if save_fmt == 'JPEG':
-                            img = img.convert('RGB')
-                        img.save(img_path, save_fmt)
-                        zf.write(img_path, f'page{i+1}.{ext}')
+                img_paths = []
+                for i, img in enumerate(selected_images):
+                    img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.{ext}')
+                    save_image_file(img, img_path, save_fmt)
+                    img_paths.append((img_path, f'page{i+1}.{ext}'))
+                with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for img_path, arcname in img_paths:
+                        zf.write(img_path, arcname)
 
         elif fmt == 'docx':
             output_filename = f'{base_name}_converted.docx'
