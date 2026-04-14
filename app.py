@@ -243,7 +243,7 @@ def convert():
     uid = str(uuid.uuid4())[:8]
     input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
     file.save(input_path)
-    base_name = secure_filename(file.filename).replace('.pdf', '')
+    base_name = secure_filename(file.filename).replace('.pdf', '').replace('.', '_')
 
     try:
         page_count = 0
