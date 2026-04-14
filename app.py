@@ -335,7 +335,8 @@ def convert():
         return send_file(output_path, as_attachment=True, download_name=output_filename)
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        import traceback
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
     finally:
         if os.path.exists(input_path):
             os.remove(input_path)
