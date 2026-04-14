@@ -33,8 +33,9 @@ def detect_pdf_type(input_path):
     except:
         return 'scanned'
 
-def pdf_to_images(input_path, dpi=120, fmt='png'):
-    return convert_from_path(input_path, dpi=dpi, thread_count=1, use_cropbox=True, strict=False, output_folder=OUTPUT_FOLDER, fmt=fmt)
+def pdf_to_images(input_path, dpi=120):
+    images = convert_from_path(input_path, dpi=dpi, thread_count=1, use_cropbox=True, strict=False)
+    return images
 
 def ocr_images(images):
     import pytesseract
@@ -233,12 +234,12 @@ def detect():
 @app.route('/convert', methods=['POST'])
 def convert():
     if 'file' not in request.files:
-        return {'error': 'No file uploaded'}, 400
+        return jsonify({'error': 'No file uploaded'}), 400
     file = request.files['file']
     fmt = request.form.get('format', 'jpg').lower()
     mode = request.form.get('mode', 'image')
     if file.filename == '' or not file.filename.endswith('.pdf'):
-        return {'error': 'Please upload a valid PDF'}, 400
+        return jsonify({'error': 'Please upload a valid PDF'}), 400
 
     uid = str(uuid.uuid4())[:8]
     input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
@@ -246,16 +247,15 @@ def convert():
     base_name = secure_filename(file.filename).replace('.pdf', '').replace('.', '_')
 
     try:
-        page_count = 0
         with pdfplumber.open(input_path) as pdf:
             page_count = len(pdf.pages)
         dpi = 150 if page_count <= 5 else 80
-        images = pdf_to_images(input_path, dpi=dpi, fmt=fmt if fmt in ('jpg', 'png') else 'png')
+        images = pdf_to_images(input_path, dpi=dpi)
 
         if fmt in ('jpg', 'png'):
             save_fmt = 'PNG' if fmt == 'png' else 'JPEG'
+            ext = fmt
 
-            # Parse pages parameter
             pages_param = request.form.get('pages', '').strip()
             selected_indices = []
             if pages_param:
@@ -277,18 +277,26 @@ def convert():
             else:
                 selected_images = images
 
+            if not selected_images:
+                return jsonify({'error': 'No valid pages selected'}), 400
+
             if len(selected_images) == 1:
-                output_filename = f'{base_name}_converted.{fmt}'
+                output_filename = f'{base_name}_converted.{ext}'
                 output_path = os.path.join(OUTPUT_FOLDER, output_filename)
-                selected_images[0].save(output_path, save_fmt)
+                img = selected_images[0]
+                if save_fmt == 'JPEG':
+                    img = img.convert('RGB')
+                img.save(output_path, save_fmt)
             else:
                 output_filename = f'{base_name}_converted.zip'
                 output_path = os.path.join(OUTPUT_FOLDER, output_filename)
                 with zipfile.ZipFile(output_path, 'w') as zf:
                     for i, img in enumerate(selected_images):
-                        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.{fmt}')
+                        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.{ext}')
+                        if save_fmt == 'JPEG':
+                            img = img.convert('RGB')
                         img.save(img_path, save_fmt)
-                        zf.write(img_path, f'page{i+1}.{fmt}')
+                        zf.write(img_path, f'page{i+1}.{ext}')
 
         elif fmt == 'docx':
             output_filename = f'{base_name}_converted.docx'
@@ -330,7 +338,7 @@ def convert():
             save_as_html_images(images, output_path, uid)
 
         else:
-            return {'error': 'Unsupported format'}, 400
+            return jsonify({'error': 'Unsupported format'}), 400
 
         return send_file(output_path, as_attachment=True, download_name=output_filename)
 
