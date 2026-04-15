@@ -118,7 +118,6 @@ body{{margin:0;padding:20px;background:#666;display:flex;flex-direction:column;a
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def rgb_to_hex(color):
-    """Convert a pdfplumber color tuple (0-1 floats) to hex string."""
     try:
         if isinstance(color, (list, tuple)) and len(color) == 3:
             r, g, b = [int(round(c * 255)) for c in color]
@@ -176,18 +175,13 @@ def compute_median_font_size(page):
     return sizes[len(sizes) // 2]
 
 def get_rect_color_at(rects, y_top, y_bottom, x0, x1, page_w, page_h):
-    """
-    Find the background color of a cell region by checking which rects
-    overlap it. Ignores full-page background rects.
-    Returns hex color string or None.
-    """
+    """Find background color of a cell by checking overlapping rects."""
     best_color = None
     best_area = 0
     for r in rects:
-        # Skip full-page or near-full-page background rects
+        # Skip full-page background rects
         if r['width'] > page_w * 0.95 and r['height'] > page_h * 0.5:
             continue
-        # Check overlap
         oy0 = max(r['top'], y_top)
         oy1 = min(r['bottom'], y_bottom)
         ox0 = max(r['x0'], x0)
@@ -198,115 +192,89 @@ def get_rect_color_at(rects, y_top, y_bottom, x0, x1, page_w, page_h):
                 color = r.get('non_stroking_color')
                 if color is not None:
                     hex_c = rgb_to_hex(color)
-                    # Skip white backgrounds
-                    if hex_c and hex_c.upper() not in ('FFFFFF', 'FEFEFE'):
+                    if hex_c and hex_c.upper() not in ('FFFFFF', 'FEFEFE', 'FDFDFD'):
                         best_color = hex_c
                         best_area = area
     return best_color
 
-def extract_tables_from_page(page):
+def extract_tables_rect_based(page):
     """
-    Try multiple strategies to extract tables from a page.
-    Returns list of table data arrays.
-    Priority: rect-based explicit > lines > default
+    Extract tables using filled rects as explicit cell boundaries.
+    Returns (tables, y_positions, x_positions) or ([], None, None).
     """
     page_w = float(page.width)
     page_h = float(page.height)
     rects = page.rects
 
-    # Strategy 1: Use filled rects as explicit table boundaries
     cell_rects = [r for r in rects if
                   r['width'] < page_w * 0.95 and
                   r['height'] < page_h * 0.3 and
                   r['width'] > 5 and r['height'] > 5]
 
-    if cell_rects:
-        y_positions = sorted(set(
-            [round(r['top'], 1) for r in cell_rects] +
-            [round(r['bottom'], 1) for r in cell_rects]
-        ))
-        x_positions = sorted(set(
-            [round(r['x0'], 1) for r in cell_rects] +
-            [round(r['x1'], 1) for r in cell_rects]
-        ))
-        if len(y_positions) >= 2 and len(x_positions) >= 2:
-            try:
-                tables = page.extract_tables({
-                    'vertical_strategy': 'explicit',
-                    'horizontal_strategy': 'explicit',
-                    'explicit_vertical_lines': x_positions,
-                    'explicit_horizontal_lines': y_positions,
-                    'snap_tolerance': 4,
-                    'join_tolerance': 4,
-                })
-                if tables:
-                    return tables, y_positions, x_positions, rects
-            except:
-                pass
+    if not cell_rects:
+        return [], None, None
 
-    # Strategy 2: lines-based
+    y_positions = sorted(set(
+        [round(r['top'], 1) for r in cell_rects] +
+        [round(r['bottom'], 1) for r in cell_rects]
+    ))
+    x_positions = sorted(set(
+        [round(r['x0'], 1) for r in cell_rects] +
+        [round(r['x1'], 1) for r in cell_rects]
+    ))
+
+    if len(y_positions) < 2 or len(x_positions) < 2:
+        return [], None, None
+
+    try:
+        tables = page.extract_tables({
+            'vertical_strategy': 'explicit',
+            'horizontal_strategy': 'explicit',
+            'explicit_vertical_lines': x_positions,
+            'explicit_horizontal_lines': y_positions,
+            'snap_tolerance': 4,
+            'join_tolerance': 4,
+        })
+        return tables or [], y_positions, x_positions
+    except:
+        return [], None, None
+
+def extract_tables_line_based(page):
+    """Fallback: extract tables using drawn lines."""
     try:
         tables = page.extract_tables({
             'vertical_strategy': 'lines',
             'horizontal_strategy': 'lines',
             'snap_tolerance': 3,
         })
-        if tables:
-            return tables, None, None, rects
+        return tables or [], None, None
     except:
-        pass
+        return [], None, None
 
-    # Strategy 3: default
-    try:
-        tables = page.extract_tables()
-        if tables:
-            return tables, None, None, rects
-    except:
-        pass
+def get_table_y_ranges(y_positions):
+    """
+    Given a list of y boundary positions, return list of (y_top, y_bottom)
+    pairs representing each row's vertical span.
+    """
+    if not y_positions or len(y_positions) < 2:
+        return []
+    return [(y_positions[i], y_positions[i+1]) for i in range(len(y_positions)-1)]
 
-    return [], None, None, rects
+def word_is_in_table_region(word, table_y_top, table_y_bottom, table_x_left, table_x_right):
+    """Check if a word falls within the table's bounding box."""
+    wx0 = float(word['x0'])
+    wx1 = float(word['x1'])
+    wtop = float(word['top'])
+    wbottom = float(word['bottom'])
+    return (wx0 >= table_x_left - 5 and wx1 <= table_x_right + 5 and
+            wtop >= table_y_top - 5 and wbottom <= table_y_bottom + 5)
 
-def get_table_bboxes(page):
-    """Get bounding boxes for all detected tables on the page."""
-    bboxes = []
-    try:
-        for t in page.find_tables():
-            bboxes.append(t.bbox)
-    except:
-        pass
-
-    # Also try with rect-based detection
-    if not bboxes:
-        page_w = float(page.width)
-        page_h = float(page.height)
-        rects = page.rects
-        cell_rects = [r for r in rects if
-                      r['width'] < page_w * 0.95 and
-                      r['height'] < page_h * 0.3 and
-                      r['width'] > 5 and r['height'] > 5]
-        if cell_rects:
-            min_x = min(r['x0'] for r in cell_rects)
-            max_x = max(r['x1'] for r in cell_rects)
-            min_y = min(r['top'] for r in cell_rects)
-            max_y = max(r['bottom'] for r in cell_rects)
-            bboxes.append((min_x, min_y, max_x, max_y))
-    return bboxes
-
-def bbox_overlaps(bbox, table_bboxes, tolerance=2):
-    x0, top, x1, bottom = bbox
-    for tb in table_bboxes:
-        tx0, ttop, tx1, tbottom = tb
-        if (x0 < tx1 - tolerance and x1 > tx0 + tolerance and
-                top < tbottom - tolerance and bottom > ttop + tolerance):
-            return True
-    return False
 
 # ── Main native DOCX converter ─────────────────────────────────────────────────
 
 def save_as_docx_native(input_path, output_path, uid):
     from docx import Document
-    from docx.shared import Pt, Inches, RGBColor
-    from docx.oxml.ns import qn
+    from docx.shared import Pt, Inches
 
     doc = Document()
     for section in doc.sections:
@@ -322,13 +290,23 @@ def save_as_docx_native(input_path, output_path, uid):
 
             page_w = float(page.width)
             page_h = float(page.height)
+            rects = page.rects
             median_size = compute_median_font_size(page)
 
-            # Extract tables using best available strategy
-            tables, y_positions, x_positions, rects = extract_tables_from_page(page)
-            table_bboxes = get_table_bboxes(page)
+            # Try rect-based table extraction first, then line-based
+            tables, y_positions, x_positions = extract_tables_rect_based(page)
+            if not tables:
+                tables, y_positions, x_positions = extract_tables_line_based(page)
 
-            # Extract all words
+            # Compute overall table bounding box from y/x positions
+            # to know which words are inside the table
+            table_x_left = x_positions[0] if x_positions else None
+            table_x_right = x_positions[-1] if x_positions else None
+            table_y_top = y_positions[0] if y_positions else None
+            table_y_bottom = y_positions[-1] if y_positions else None
+            has_table_region = (table_x_left is not None and table_y_top is not None)
+
+            # Extract all words on this page
             try:
                 all_words = page.extract_words(
                     x_tolerance=3, y_tolerance=3,
@@ -339,7 +317,7 @@ def save_as_docx_native(input_path, output_path, uid):
             except:
                 all_words = []
 
-            # If no text at all, use OCR
+            # If no text at all → OCR fallback
             if not all_words:
                 try:
                     import pytesseract
@@ -364,20 +342,20 @@ def save_as_docx_native(input_path, output_path, uid):
                     pass
                 continue
 
-            # Words outside tables → text paragraphs
-            text_words = [
-                w for w in all_words
-                if not bbox_overlaps(
-                    (float(w['x0']), float(w['top']),
-                     float(w['x1']), float(w['bottom'])),
-                    table_bboxes
-                )
-            ]
+            # Separate words: inside table region vs outside
+            if has_table_region and tables:
+                text_words = [w for w in all_words if not word_is_in_table_region(
+                    w, table_y_top, table_y_bottom, table_x_left, table_x_right)]
+                inside_words = [w for w in all_words if word_is_in_table_region(
+                    w, table_y_top, table_y_bottom, table_x_left, table_x_right)]
+            else:
+                text_words = all_words
+                inside_words = []
 
-            # Build events list: (y_position, type, content)
+            # Build events: (y_position, type, content)
             events = []
 
-            # Text line events
+            # Text line events (words outside table)
             lines_dict = {}
             for word in text_words:
                 y_key = round(float(word['top']) / 4) * 4
@@ -387,20 +365,10 @@ def save_as_docx_native(input_path, output_path, uid):
             for y_key, words in lines_dict.items():
                 events.append((y_key, 'text', words))
 
-            # Table events
-            try:
-                page_table_objs = list(page.find_tables())
-            except:
-                page_table_objs = []
-
-            for t_idx, table_data in enumerate(tables):
-                if t_idx < len(page_table_objs):
-                    t_top = page_table_objs[t_idx].bbox[1]
-                elif table_bboxes:
-                    t_top = table_bboxes[0][1]
-                else:
-                    t_top = 0
-                events.append((t_top, 'table', (t_idx, table_data)))
+            # Table event — use table_y_top so it sorts in correct position
+            if tables:
+                t_y = table_y_top if table_y_top is not None else 0
+                events.append((t_y, 'table', tables[0]))
 
             events.sort(key=lambda e: e[0])
 
@@ -443,7 +411,7 @@ def save_as_docx_native(input_path, output_path, uid):
 
                 # ── Table ───────────────────────────────────────────────────
                 elif event_type == 'table':
-                    t_idx, table_data = content
+                    table_data = content
                     if not table_data:
                         continue
 
@@ -466,25 +434,34 @@ def save_as_docx_native(input_path, output_path, uid):
                     tbl = doc.add_table(rows=len(norm_rows), cols=num_cols)
                     tbl.style = 'Table Grid'
 
-                    # Determine row y positions for color lookup
-                    # Use y_positions if available from rect-based extraction
-                    row_y_pairs = []
-                    if y_positions and len(y_positions) >= len(norm_rows) + 1:
-                        for i in range(len(norm_rows)):
-                            row_y_pairs.append((y_positions[i], y_positions[i+1]))
-                    else:
-                        row_y_pairs = [(0, 0)] * len(norm_rows)
+                    # Row y spans for color detection
+                    # We need to map norm_rows indices back to y_positions
+                    # y_positions has one entry per row boundary so len = rows+1
+                    row_y_spans = get_table_y_ranges(y_positions) if y_positions else []
 
-                    # Determine column x positions for color lookup
-                    col_x_pairs = []
+                    # Col x spans
+                    col_x_spans = []
                     if x_positions and len(x_positions) >= num_cols + 1:
                         for j in range(num_cols):
-                            col_x_pairs.append((x_positions[j], x_positions[j+1]))
-                    else:
-                        col_x_pairs = [(0, 0)] * num_cols
+                            col_x_spans.append((x_positions[j], x_positions[j+1]))
+
+                    # Track which rows in y_positions map to norm_rows
+                    # (some y rows may have been filtered as empty, so we
+                    # match by iterating original table_data)
+                    orig_row_indices = []
+                    orig_idx = 0
+                    for row in table_data:
+                        if any(c and str(c).strip() for c in row):
+                            orig_row_indices.append(orig_idx)
+                        orig_idx += 1
 
                     for r_idx, row in enumerate(norm_rows):
-                        y_top, y_bottom = row_y_pairs[r_idx] if r_idx < len(row_y_pairs) else (0, 0)
+                        # Get y span for this row
+                        orig_r = orig_row_indices[r_idx] if r_idx < len(orig_row_indices) else r_idx
+                        if orig_r < len(row_y_spans):
+                            y_top, y_bottom = row_y_spans[orig_r]
+                        else:
+                            y_top, y_bottom = 0, 0
 
                         for c_idx, cell_val in enumerate(row):
                             cell = tbl.rows[r_idx].cells[c_idx]
@@ -492,12 +469,11 @@ def save_as_docx_native(input_path, output_path, uid):
                             if text == 'None':
                                 text = ''
 
-                            # Apply background color from PDF rects
-                            if y_top != y_bottom and c_idx < len(col_x_pairs):
-                                cx0, cx1 = col_x_pairs[c_idx]
+                            # Apply background color
+                            if y_top != y_bottom and c_idx < len(col_x_spans):
+                                cx0, cx1 = col_x_spans[c_idx]
                                 hex_color = get_rect_color_at(
-                                    rects, y_top, y_bottom, cx0, cx1, page_w, page_h
-                                )
+                                    rects, y_top, y_bottom, cx0, cx1, page_w, page_h)
                                 if hex_color:
                                     try:
                                         set_cell_background(cell, hex_color)
