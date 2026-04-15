@@ -1,5 +1,5 @@
 from flask import Flask, request, send_file, render_template, jsonify
-import os, uuid, zipfile, base64, re, unicodedata
+import os, uuid, zipfile, base64, re, unicodedata, traceback
 from werkzeug.utils import secure_filename
 from pdf2image import convert_from_path
 from PIL import Image
@@ -204,47 +204,31 @@ def get_rect_color_at(rects, y_top, y_bottom, x0, x1, page_w, page_h):
 
 def merge_split_cells(row):
     """
-    Merge cells where an English word is genuinely split mid-word across
-    a column boundary — e.g. ['Contra', 'ct Data'] → ['Contract Data'].
-
-    Rules (all must be true to merge):
-    1. Current cell ends with a letter (not space/punct/digit)
-    2. Next cell starts with a LOWERCASE letter (never digit — digits are values)
-    3. Neither cell is empty
-    4. Current cell is not purely Arabic/RTL text
+    Merge cells where an English word is split mid-word across column boundary.
+    Only merges when: cur ends with ASCII letter AND next starts with lowercase ASCII letter.
+    Never merges when next cell starts with digit (digits = values, not continuations).
     """
     if not row:
         return row
-
     merged = list(row)
     i = 0
     while i < len(merged) - 1:
         cur = clean_text(str(merged[i]) if merged[i] else '')
         nxt = clean_text(str(merged[i + 1]) if merged[i + 1] else '')
-
         if not cur or not nxt:
             i += 1
             continue
-
-        # Only merge if:
-        # - cur ends with an ASCII letter (no space, no punct, no digit)
-        # - nxt starts with a lowercase ASCII letter (word continuation)
-        # - cur is not purely RTL/Arabic
-        cur_ends_with_letter = cur[-1].isascii() and cur[-1].isalpha()
-        nxt_starts_lowercase = nxt[0].isascii() and nxt[0].islower()
+        cur_ends_with_ascii_letter = cur[-1].isascii() and cur[-1].isalpha()
+        nxt_starts_lowercase_ascii = nxt[0].isascii() and nxt[0].islower()
         cur_not_arabic = not is_rtl_text(cur)
-
-        if cur_ends_with_letter and nxt_starts_lowercase and cur_not_arabic:
+        if cur_ends_with_ascii_letter and nxt_starts_lowercase_ascii and cur_not_arabic:
             merged[i] = cur + nxt
             merged.pop(i + 1)
-            # Don't increment — check again for triple splits
         else:
             i += 1
-
     return merged
 
 def extract_page_images_pymupdf(input_path, page_index, uid, output_folder):
-    """Extract embedded images from a PDF page using PyMuPDF."""
     saved = []
     try:
         import fitz
@@ -273,6 +257,82 @@ def extract_page_images_pymupdf(input_path, page_index, uid, output_folder):
     except Exception:
         pass
     return saved
+
+# ── Debug endpoint ─────────────────────────────────────────────────────────────
+
+@app.route('/debug', methods=['POST'])
+def debug():
+    """Upload a PDF and get a diagnostic report of what the server sees."""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file'}), 400
+    file = request.files['file']
+    uid = str(uuid.uuid4())[:8]
+    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
+    file.save(input_path)
+
+    report = {'pages': []}
+    try:
+        with pdfplumber.open(input_path) as pdf:
+            report['page_count'] = len(pdf.pages)
+            for page_index, page in enumerate(pdf.pages[:2]):  # Only check first 2 pages
+                page_w = float(page.width)
+                page_h = float(page.height)
+                rects = page.rects
+
+                cell_rects = [r for r in rects if
+                              r['width'] < page_w * 0.95 and
+                              r['height'] < page_h * 0.3 and
+                              r['width'] > 5 and r['height'] > 5]
+
+                page_info = {
+                    'page': page_index + 1,
+                    'total_rects': len(rects),
+                    'cell_rects': len(cell_rects),
+                    'tables_found': 0,
+                    'table_rows': 0,
+                    'table_cols': 0,
+                    'error': None,
+                    'sample_row': None,
+                }
+
+                if cell_rects:
+                    y_pos = sorted(set(
+                        [round(r['top'], 1) for r in cell_rects] +
+                        [round(r['bottom'], 1) for r in cell_rects]
+                    ))
+                    x_pos = sorted(set(
+                        [round(r['x0'], 1) for r in cell_rects] +
+                        [round(r['x1'], 1) for r in cell_rects]
+                    ))
+                    page_info['y_pos_count'] = len(y_pos)
+                    page_info['x_pos_count'] = len(x_pos)
+
+                    try:
+                        tables = page.extract_tables({
+                            'vertical_strategy': 'explicit',
+                            'horizontal_strategy': 'explicit',
+                            'explicit_vertical_lines': x_pos,
+                            'explicit_horizontal_lines': y_pos,
+                            'snap_tolerance': 4,
+                            'join_tolerance': 4,
+                        }) or []
+                        page_info['tables_found'] = len(tables)
+                        if tables:
+                            page_info['table_rows'] = len(tables[0])
+                            page_info['table_cols'] = len(tables[0][0]) if tables[0] else 0
+                            if tables[0]:
+                                page_info['sample_row'] = [str(c)[:20] if c else '' for c in tables[0][2]] if len(tables[0]) > 2 else []
+                    except Exception as e:
+                        page_info['error'] = traceback.format_exc()
+
+                report['pages'].append(page_info)
+    except Exception as e:
+        report['fatal_error'] = traceback.format_exc()
+    finally:
+        if os.path.exists(input_path):
+            os.remove(input_path)
+
+    return jsonify(report)
 
 # ── Main native DOCX converter ─────────────────────────────────────────────────
 
@@ -358,7 +418,6 @@ def save_as_docx_native(input_path, output_path, uid):
                 except:
                     pass
 
-            # CASE 1: Page has table
             if has_table and tables:
                 table_data = tables[0]
                 rows = [r for r in table_data if any(c and str(c).strip() for c in r)]
@@ -419,7 +478,6 @@ def save_as_docx_native(input_path, output_path, uid):
 
                     doc.add_paragraph()
 
-            # CASE 2: No table — text paragraphs
             else:
                 try:
                     all_words = page.extract_words(
@@ -712,7 +770,6 @@ def convert():
         return send_file(output_path, as_attachment=True, download_name=output_filename)
 
     except Exception as e:
-        import traceback
         return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
     finally:
         if os.path.exists(input_path):
