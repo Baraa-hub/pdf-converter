@@ -1,5 +1,5 @@
 from flask import Flask, request, send_file, render_template, jsonify
-import os, uuid, zipfile, base64
+import os, uuid, zipfile, base64, re, unicodedata
 from werkzeug.utils import secure_filename
 from pdf2image import convert_from_path
 from PIL import Image
@@ -41,12 +41,23 @@ def ocr_images(images):
     return [pytesseract.image_to_string(img, lang='eng+ara') for img in images]
 
 def is_rtl_text(text):
-    import unicodedata
     return any(unicodedata.bidirectional(c) in ('R', 'AL') for c in text if c.strip())
 
 def fix_rtl(line):
     from bidi.algorithm import get_display
     return get_display(line)
+
+def clean_text(text):
+    """Remove NULL bytes and XML-incompatible control characters."""
+    if not text:
+        return ''
+    # Remove null bytes and control chars except tab, newline, carriage return
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    # Replace newlines within cell text with space
+    text = text.replace('\n', ' ').replace('\r', ' ')
+    # Collapse multiple spaces
+    text = re.sub(r' +', ' ', text).strip()
+    return text
 
 def save_image_file(img, path, save_fmt):
     img = img.copy()
@@ -175,11 +186,9 @@ def compute_median_font_size(page):
     return sizes[len(sizes) // 2]
 
 def get_rect_color_at(rects, y_top, y_bottom, x0, x1, page_w, page_h):
-    """Find background color of a cell by checking overlapping rects."""
     best_color = None
     best_area = 0
     for r in rects:
-        # Skip full-page background rects
         if r['width'] > page_w * 0.95 and r['height'] > page_h * 0.5:
             continue
         oy0 = max(r['top'], y_top)
@@ -196,79 +205,6 @@ def get_rect_color_at(rects, y_top, y_bottom, x0, x1, page_w, page_h):
                         best_color = hex_c
                         best_area = area
     return best_color
-
-def extract_tables_rect_based(page):
-    """
-    Extract tables using filled rects as explicit cell boundaries.
-    Returns (tables, y_positions, x_positions) or ([], None, None).
-    """
-    page_w = float(page.width)
-    page_h = float(page.height)
-    rects = page.rects
-
-    cell_rects = [r for r in rects if
-                  r['width'] < page_w * 0.95 and
-                  r['height'] < page_h * 0.3 and
-                  r['width'] > 5 and r['height'] > 5]
-
-    if not cell_rects:
-        return [], None, None
-
-    y_positions = sorted(set(
-        [round(r['top'], 1) for r in cell_rects] +
-        [round(r['bottom'], 1) for r in cell_rects]
-    ))
-    x_positions = sorted(set(
-        [round(r['x0'], 1) for r in cell_rects] +
-        [round(r['x1'], 1) for r in cell_rects]
-    ))
-
-    if len(y_positions) < 2 or len(x_positions) < 2:
-        return [], None, None
-
-    try:
-        tables = page.extract_tables({
-            'vertical_strategy': 'explicit',
-            'horizontal_strategy': 'explicit',
-            'explicit_vertical_lines': x_positions,
-            'explicit_horizontal_lines': y_positions,
-            'snap_tolerance': 4,
-            'join_tolerance': 4,
-        })
-        return tables or [], y_positions, x_positions
-    except:
-        return [], None, None
-
-def extract_tables_line_based(page):
-    """Fallback: extract tables using drawn lines."""
-    try:
-        tables = page.extract_tables({
-            'vertical_strategy': 'lines',
-            'horizontal_strategy': 'lines',
-            'snap_tolerance': 3,
-        })
-        return tables or [], None, None
-    except:
-        return [], None, None
-
-def get_table_y_ranges(y_positions):
-    """
-    Given a list of y boundary positions, return list of (y_top, y_bottom)
-    pairs representing each row's vertical span.
-    """
-    if not y_positions or len(y_positions) < 2:
-        return []
-    return [(y_positions[i], y_positions[i+1]) for i in range(len(y_positions)-1)]
-
-def word_is_in_table_region(word, table_y_top, table_y_bottom, table_x_left, table_x_right):
-    """Check if a word falls within the table's bounding box."""
-    wx0 = float(word['x0'])
-    wx1 = float(word['x1'])
-    wtop = float(word['top'])
-    wbottom = float(word['bottom'])
-    return (wx0 >= table_x_left - 5 and wx1 <= table_x_right + 5 and
-            wtop >= table_y_top - 5 and wbottom <= table_y_bottom + 5)
-
 
 # ── Main native DOCX converter ─────────────────────────────────────────────────
 
@@ -293,93 +229,164 @@ def save_as_docx_native(input_path, output_path, uid):
             rects = page.rects
             median_size = compute_median_font_size(page)
 
-            # Try rect-based table extraction first, then line-based
-            tables, y_positions, x_positions = extract_tables_rect_based(page)
-            if not tables:
-                tables, y_positions, x_positions = extract_tables_line_based(page)
+            # Detect cell rects for table extraction
+            cell_rects = [r for r in rects if
+                          r['width'] < page_w * 0.95 and
+                          r['height'] < page_h * 0.3 and
+                          r['width'] > 5 and r['height'] > 5]
 
-            # Compute overall table bounding box from y/x positions
-            # to know which words are inside the table
-            table_x_left = x_positions[0] if x_positions else None
-            table_x_right = x_positions[-1] if x_positions else None
-            table_y_top = y_positions[0] if y_positions else None
-            table_y_bottom = y_positions[-1] if y_positions else None
-            has_table_region = (table_x_left is not None and table_y_top is not None)
+            has_table = False
+            tables = []
+            y_pos = []
+            x_pos = []
 
-            # Extract all words on this page
-            try:
-                all_words = page.extract_words(
-                    x_tolerance=3, y_tolerance=3,
-                    keep_blank_chars=False,
-                    use_text_flow=False,
-                    extra_attrs=['fontname', 'size']
-                )
-            except:
-                all_words = []
+            if cell_rects:
+                y_pos = sorted(set(
+                    [round(r['top'], 1) for r in cell_rects] +
+                    [round(r['bottom'], 1) for r in cell_rects]
+                ))
+                x_pos = sorted(set(
+                    [round(r['x0'], 1) for r in cell_rects] +
+                    [round(r['x1'], 1) for r in cell_rects]
+                ))
+                if len(y_pos) >= 2 and len(x_pos) >= 2:
+                    try:
+                        tables = page.extract_tables({
+                            'vertical_strategy': 'explicit',
+                            'horizontal_strategy': 'explicit',
+                            'explicit_vertical_lines': x_pos,
+                            'explicit_horizontal_lines': y_pos,
+                            'snap_tolerance': 4,
+                            'join_tolerance': 4,
+                        }) or []
+                        if tables:
+                            has_table = True
+                    except:
+                        pass
 
-            # If no text at all → OCR fallback
-            if not all_words:
+            # Fallback: try line-based detection
+            if not has_table:
                 try:
-                    import pytesseract
-                    imgs = convert_from_path(input_path, dpi=150,
-                                            first_page=page_index+1,
-                                            last_page=page_index+1)
-                    if imgs:
-                        text = pytesseract.image_to_string(imgs[0], lang='eng+ara')
-                        for line in text.split('\n'):
-                            line = line.strip()
-                            if line:
-                                para = doc.add_paragraph()
-                                rtl = is_rtl_text(line)
-                                if rtl:
-                                    line = fix_rtl(line)
-                                    apply_rtl_to_paragraph(para)
-                                run = para.add_run(line)
-                                run.font.size = Pt(11)
-                                if rtl:
-                                    apply_rtl_to_run(run)
+                    tables = page.extract_tables({
+                        'vertical_strategy': 'lines',
+                        'horizontal_strategy': 'lines',
+                        'snap_tolerance': 3,
+                    }) or []
+                    if tables:
+                        has_table = True
+                        y_pos = []
+                        x_pos = []
                 except:
                     pass
-                continue
 
-            # Separate words: inside table region vs outside
-            if has_table_region and tables:
-                text_words = [w for w in all_words if not word_is_in_table_region(
-                    w, table_y_top, table_y_bottom, table_x_left, table_x_right)]
-                inside_words = [w for w in all_words if word_is_in_table_region(
-                    w, table_y_top, table_y_bottom, table_x_left, table_x_right)]
+            # --- CASE 1: Page has tables ---
+            if has_table and tables:
+                table_data = tables[0]
+                rows = [r for r in table_data if any(c and str(c).strip() for c in r)]
+
+                if rows:
+                    num_cols = max(len(r) for r in rows)
+                    norm_rows = [list(r) + [None] * (num_cols - len(r)) for r in rows]
+
+                    tbl = doc.add_table(rows=len(norm_rows), cols=num_cols)
+                    tbl.style = 'Table Grid'
+
+                    row_y_spans = []
+                    if len(y_pos) >= 2:
+                        row_y_spans = [(y_pos[i], y_pos[i+1]) for i in range(len(y_pos)-1)]
+
+                    col_x_spans = []
+                    if len(x_pos) >= 2:
+                        col_x_spans = [(x_pos[j], x_pos[j+1]) for j in range(min(num_cols, len(x_pos)-1))]
+
+                    orig_indices = [i for i, r in enumerate(table_data)
+                                    if any(c and str(c).strip() for c in r)]
+
+                    for r_idx, row in enumerate(norm_rows):
+                        orig_r = orig_indices[r_idx] if r_idx < len(orig_indices) else r_idx
+                        y_top, y_bottom = row_y_spans[orig_r] if orig_r < len(row_y_spans) else (0, 0)
+
+                        for c_idx, cell_val in enumerate(row):
+                            cell = tbl.rows[r_idx].cells[c_idx]
+                            text = clean_text(str(cell_val) if cell_val else '')
+                            if text.lower() == 'none':
+                                text = ''
+
+                            # Background color
+                            if y_top != y_bottom and c_idx < len(col_x_spans):
+                                cx0, cx1 = col_x_spans[c_idx]
+                                hex_color = get_rect_color_at(
+                                    rects, y_top, y_bottom, cx0, cx1, page_w, page_h)
+                                if hex_color:
+                                    try:
+                                        set_cell_background(cell, hex_color)
+                                    except:
+                                        pass
+
+                            if not text:
+                                continue
+
+                            rtl = is_rtl_text(text)
+                            if rtl:
+                                text = fix_rtl(text)
+
+                            para = cell.paragraphs[0]
+                            if rtl:
+                                apply_rtl_to_paragraph(para)
+                            run = para.add_run(text)
+                            run.font.size = Pt(10)
+                            if rtl:
+                                apply_rtl_to_run(run)
+
+                    doc.add_paragraph()
+
+            # --- CASE 2: No tables — extract as text paragraphs ---
             else:
-                text_words = all_words
-                inside_words = []
+                try:
+                    all_words = page.extract_words(
+                        x_tolerance=3, y_tolerance=3,
+                        keep_blank_chars=False,
+                        use_text_flow=False,
+                        extra_attrs=['fontname', 'size']
+                    )
+                except:
+                    all_words = []
 
-            # Build events: (y_position, type, content)
-            events = []
+                if not all_words:
+                    # OCR fallback
+                    try:
+                        import pytesseract
+                        imgs = convert_from_path(input_path, dpi=150,
+                                                first_page=page_index+1,
+                                                last_page=page_index+1)
+                        if imgs:
+                            text = pytesseract.image_to_string(imgs[0], lang='eng+ara')
+                            for line in text.split('\n'):
+                                line = clean_text(line)
+                                if line:
+                                    para = doc.add_paragraph()
+                                    rtl = is_rtl_text(line)
+                                    if rtl:
+                                        line = fix_rtl(line)
+                                        apply_rtl_to_paragraph(para)
+                                    run = para.add_run(line)
+                                    run.font.size = Pt(11)
+                                    if rtl:
+                                        apply_rtl_to_run(run)
+                    except:
+                        pass
+                    continue
 
-            # Text line events (words outside table)
-            lines_dict = {}
-            for word in text_words:
-                y_key = round(float(word['top']) / 4) * 4
-                if y_key not in lines_dict:
-                    lines_dict[y_key] = []
-                lines_dict[y_key].append(word)
-            for y_key, words in lines_dict.items():
-                events.append((y_key, 'text', words))
+                lines_dict = {}
+                for word in all_words:
+                    y_key = round(float(word['top']) / 4) * 4
+                    if y_key not in lines_dict:
+                        lines_dict[y_key] = []
+                    lines_dict[y_key].append(word)
 
-            # Table event — use table_y_top so it sorts in correct position
-            if tables:
-                t_y = table_y_top if table_y_top is not None else 0
-                events.append((t_y, 'table', tables[0]))
-
-            events.sort(key=lambda e: e[0])
-
-            for _, event_type, content in events:
-
-                # ── Text paragraph ──────────────────────────────────────────
-                if event_type == 'text':
-                    words = sorted(content, key=lambda w: float(w['x0']))
-                    if not words:
-                        continue
-                    line_text = ' '.join(w['text'] for w in words).strip()
+                for y_key in sorted(lines_dict.keys()):
+                    words = sorted(lines_dict[y_key], key=lambda w: float(w['x0']))
+                    line_text = clean_text(' '.join(w['text'] for w in words))
                     if not line_text:
                         continue
 
@@ -408,94 +415,6 @@ def save_as_docx_native(input_path, output_path, uid):
                     run.font.size = Pt(min(max(8, avg_size), 72))
                     if rtl:
                         apply_rtl_to_run(run)
-
-                # ── Table ───────────────────────────────────────────────────
-                elif event_type == 'table':
-                    table_data = content
-                    if not table_data:
-                        continue
-
-                    # Filter completely empty rows
-                    rows = [r for r in table_data
-                            if any(c and str(c).strip() for c in r)]
-                    if not rows:
-                        continue
-
-                    num_cols = max(len(r) for r in rows)
-                    if num_cols == 0:
-                        continue
-
-                    # Normalize column count
-                    norm_rows = []
-                    for row in rows:
-                        norm_row = list(row) + [None] * (num_cols - len(row))
-                        norm_rows.append(norm_row)
-
-                    tbl = doc.add_table(rows=len(norm_rows), cols=num_cols)
-                    tbl.style = 'Table Grid'
-
-                    # Row y spans for color detection
-                    # We need to map norm_rows indices back to y_positions
-                    # y_positions has one entry per row boundary so len = rows+1
-                    row_y_spans = get_table_y_ranges(y_positions) if y_positions else []
-
-                    # Col x spans
-                    col_x_spans = []
-                    if x_positions and len(x_positions) >= num_cols + 1:
-                        for j in range(num_cols):
-                            col_x_spans.append((x_positions[j], x_positions[j+1]))
-
-                    # Track which rows in y_positions map to norm_rows
-                    # (some y rows may have been filtered as empty, so we
-                    # match by iterating original table_data)
-                    orig_row_indices = []
-                    orig_idx = 0
-                    for row in table_data:
-                        if any(c and str(c).strip() for c in row):
-                            orig_row_indices.append(orig_idx)
-                        orig_idx += 1
-
-                    for r_idx, row in enumerate(norm_rows):
-                        # Get y span for this row
-                        orig_r = orig_row_indices[r_idx] if r_idx < len(orig_row_indices) else r_idx
-                        if orig_r < len(row_y_spans):
-                            y_top, y_bottom = row_y_spans[orig_r]
-                        else:
-                            y_top, y_bottom = 0, 0
-
-                        for c_idx, cell_val in enumerate(row):
-                            cell = tbl.rows[r_idx].cells[c_idx]
-                            text = str(cell_val).strip() if cell_val else ''
-                            if text == 'None':
-                                text = ''
-
-                            # Apply background color
-                            if y_top != y_bottom and c_idx < len(col_x_spans):
-                                cx0, cx1 = col_x_spans[c_idx]
-                                hex_color = get_rect_color_at(
-                                    rects, y_top, y_bottom, cx0, cx1, page_w, page_h)
-                                if hex_color:
-                                    try:
-                                        set_cell_background(cell, hex_color)
-                                    except:
-                                        pass
-
-                            if not text:
-                                continue
-
-                            rtl = is_rtl_text(text)
-                            if rtl:
-                                text = fix_rtl(text)
-
-                            para = cell.paragraphs[0]
-                            if rtl:
-                                apply_rtl_to_paragraph(para)
-                            run = para.add_run(text)
-                            run.font.size = Pt(10)
-                            if rtl:
-                                apply_rtl_to_run(run)
-
-                    doc.add_paragraph()  # spacing after table
 
     doc.save(output_path)
 
@@ -534,7 +453,8 @@ def save_as_docx_text(input_path, output_path):
                 if imgs:
                     text = pytesseract.image_to_string(imgs[0], lang='eng+ara')
                     for line in text.split('\n'):
-                        if line.strip():
+                        line = clean_text(line)
+                        if line:
                             para = doc.add_paragraph()
                             rtl = is_rtl_text(line)
                             if rtl:
@@ -549,7 +469,8 @@ def save_as_docx_text(input_path, output_path):
             native_text = page.extract_text(x_tolerance=3, y_tolerance=3)
             if native_text and native_text.strip():
                 for line in native_text.split('\n'):
-                    if line.strip():
+                    line = clean_text(line)
+                    if line:
                         para = doc.add_paragraph()
                         rtl = is_rtl_text(line)
                         if rtl:
@@ -574,7 +495,7 @@ def save_as_docx_text(input_path, output_path):
                 para.paragraph_format.space_before = Pt(0)
                 para.paragraph_format.space_after = Pt(0)
                 for word in line_words:
-                    run = para.add_run(word['text'] + ' ')
+                    run = para.add_run(clean_text(word['text']) + ' ')
                     try:
                         size = float(word.get('size', 12))
                         run.font.size = Pt(max(6, min(size, 72)))
@@ -677,10 +598,7 @@ def convert():
             if mode == 'ocr':
                 save_as_docx_text(input_path, output_path)
             else:
-                try:
-                    save_as_docx_native(input_path, output_path, uid)
-                except Exception as e:
-                    save_as_docx_images(images, output_path, uid)
+                save_as_docx_native(input_path, output_path, uid)
 
         elif fmt == 'pptx':
             output_filename = f'{base_name}_converted.pptx'
