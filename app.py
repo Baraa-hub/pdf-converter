@@ -115,13 +115,20 @@ body{{margin:0;padding:20px;background:#666;display:flex;flex-direction:column;a
     with open(output_path, 'w') as f:
         f.write(html)
 
-# ── Helpers for native DOCX conversion ────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
-def get_font_size(word):
+def rgb_to_hex(color):
+    """Convert a pdfplumber color tuple (0-1 floats) to hex string."""
     try:
-        return float(word.get('size', 12))
+        if isinstance(color, (list, tuple)) and len(color) == 3:
+            r, g, b = [int(round(c * 255)) for c in color]
+            return f'{r:02X}{g:02X}{b:02X}'
+        if isinstance(color, (list, tuple)) and len(color) == 1:
+            v = int(round(color[0] * 255))
+            return f'{v:02X}{v:02X}{v:02X}'
     except:
-        return 12.0
+        pass
+    return None
 
 def is_bold(word):
     fontname = word.get('fontname', '')
@@ -133,7 +140,7 @@ def apply_rtl_to_paragraph(para):
     pPr = para._p.get_or_add_pPr()
     bidi_el = OxmlElement('w:bidi')
     pPr.append(bidi_el)
-    para.alignment = 2  # right align
+    para.alignment = 2
 
 def apply_rtl_to_run(run):
     from docx.oxml import OxmlElement
@@ -142,7 +149,6 @@ def apply_rtl_to_run(run):
     rPr.append(rtl_el)
 
 def set_cell_background(cell, hex_color):
-    """Set background color of a table cell."""
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
     tc = cell._tc
@@ -153,19 +159,7 @@ def set_cell_background(cell, hex_color):
     shd.set(qn('w:fill'), hex_color)
     tcPr.append(shd)
 
-def add_run_to_cell(cell, text, bold=False, font_size=11, rtl=False):
-    from docx.shared import Pt
-    para = cell.paragraphs[0]
-    if rtl:
-        apply_rtl_to_paragraph(para)
-    run = para.add_run(text)
-    run.bold = bold
-    run.font.size = Pt(font_size)
-    if rtl:
-        apply_rtl_to_run(run)
-
 def compute_median_font_size(page):
-    """Get the median font size on a page to detect headings."""
     sizes = []
     try:
         words = page.extract_words(extra_attrs=['size'])
@@ -181,60 +175,140 @@ def compute_median_font_size(page):
     sizes.sort()
     return sizes[len(sizes) // 2]
 
-def bbox_overlaps_table(bbox, table_bboxes):
-    """Check if a bounding box overlaps with any table bounding box."""
+def get_rect_color_at(rects, y_top, y_bottom, x0, x1, page_w, page_h):
+    """
+    Find the background color of a cell region by checking which rects
+    overlap it. Ignores full-page background rects.
+    Returns hex color string or None.
+    """
+    best_color = None
+    best_area = 0
+    for r in rects:
+        # Skip full-page or near-full-page background rects
+        if r['width'] > page_w * 0.95 and r['height'] > page_h * 0.5:
+            continue
+        # Check overlap
+        oy0 = max(r['top'], y_top)
+        oy1 = min(r['bottom'], y_bottom)
+        ox0 = max(r['x0'], x0)
+        ox1 = min(r['x1'], x1)
+        if oy1 > oy0 and ox1 > ox0:
+            area = (oy1 - oy0) * (ox1 - ox0)
+            if area > best_area:
+                color = r.get('non_stroking_color')
+                if color is not None:
+                    hex_c = rgb_to_hex(color)
+                    # Skip white backgrounds
+                    if hex_c and hex_c.upper() not in ('FFFFFF', 'FEFEFE'):
+                        best_color = hex_c
+                        best_area = area
+    return best_color
+
+def extract_tables_from_page(page):
+    """
+    Try multiple strategies to extract tables from a page.
+    Returns list of table data arrays.
+    Priority: rect-based explicit > lines > default
+    """
+    page_w = float(page.width)
+    page_h = float(page.height)
+    rects = page.rects
+
+    # Strategy 1: Use filled rects as explicit table boundaries
+    cell_rects = [r for r in rects if
+                  r['width'] < page_w * 0.95 and
+                  r['height'] < page_h * 0.3 and
+                  r['width'] > 5 and r['height'] > 5]
+
+    if cell_rects:
+        y_positions = sorted(set(
+            [round(r['top'], 1) for r in cell_rects] +
+            [round(r['bottom'], 1) for r in cell_rects]
+        ))
+        x_positions = sorted(set(
+            [round(r['x0'], 1) for r in cell_rects] +
+            [round(r['x1'], 1) for r in cell_rects]
+        ))
+        if len(y_positions) >= 2 and len(x_positions) >= 2:
+            try:
+                tables = page.extract_tables({
+                    'vertical_strategy': 'explicit',
+                    'horizontal_strategy': 'explicit',
+                    'explicit_vertical_lines': x_positions,
+                    'explicit_horizontal_lines': y_positions,
+                    'snap_tolerance': 4,
+                    'join_tolerance': 4,
+                })
+                if tables:
+                    return tables, y_positions, x_positions, rects
+            except:
+                pass
+
+    # Strategy 2: lines-based
+    try:
+        tables = page.extract_tables({
+            'vertical_strategy': 'lines',
+            'horizontal_strategy': 'lines',
+            'snap_tolerance': 3,
+        })
+        if tables:
+            return tables, None, None, rects
+    except:
+        pass
+
+    # Strategy 3: default
+    try:
+        tables = page.extract_tables()
+        if tables:
+            return tables, None, None, rects
+    except:
+        pass
+
+    return [], None, None, rects
+
+def get_table_bboxes(page):
+    """Get bounding boxes for all detected tables on the page."""
+    bboxes = []
+    try:
+        for t in page.find_tables():
+            bboxes.append(t.bbox)
+    except:
+        pass
+
+    # Also try with rect-based detection
+    if not bboxes:
+        page_w = float(page.width)
+        page_h = float(page.height)
+        rects = page.rects
+        cell_rects = [r for r in rects if
+                      r['width'] < page_w * 0.95 and
+                      r['height'] < page_h * 0.3 and
+                      r['width'] > 5 and r['height'] > 5]
+        if cell_rects:
+            min_x = min(r['x0'] for r in cell_rects)
+            max_x = max(r['x1'] for r in cell_rects)
+            min_y = min(r['top'] for r in cell_rects)
+            max_y = max(r['bottom'] for r in cell_rects)
+            bboxes.append((min_x, min_y, max_x, max_y))
+    return bboxes
+
+def bbox_overlaps(bbox, table_bboxes, tolerance=2):
     x0, top, x1, bottom = bbox
     for tb in table_bboxes:
         tx0, ttop, tx1, tbottom = tb
-        if x0 < tx1 and x1 > tx0 and top < tbottom and bottom > ttop:
+        if (x0 < tx1 - tolerance and x1 > tx0 + tolerance and
+                top < tbottom - tolerance and bottom > ttop + tolerance):
             return True
     return False
 
-def extract_page_images(input_path, page_index, uid, output_folder):
-    """Extract embedded images from a PDF page and save them to disk."""
-    import fitz  # PyMuPDF
-    saved = []
-    try:
-        doc = fitz.open(input_path)
-        page = doc[page_index]
-        image_list = page.get_images(full=True)
-        for img_index, img in enumerate(image_list):
-            xref = img[0]
-            base_image = doc.extract_image(xref)
-            img_bytes = base_image['image']
-            img_ext = base_image['ext']
-            img_path = os.path.join(output_folder, f'{uid}_page{page_index}_img{img_index}.{img_ext}')
-            with open(img_path, 'wb') as f:
-                f.write(img_bytes)
-            saved.append(img_path)
-        doc.close()
-    except Exception:
-        pass
-    return saved
+# ── Main native DOCX converter ─────────────────────────────────────────────────
 
 def save_as_docx_native(input_path, output_path, uid):
-    """
-    Generic native PDF-to-DOCX conversion.
-    - Extracts real tables and rebuilds them as DOCX tables
-    - Preserves bold, font sizes, headings
-    - Handles RTL Arabic text
-    - Embeds images extracted from the PDF
-    - Falls back to OCR for scanned pages
-    """
     from docx import Document
-    from docx.shared import Pt, Inches
+    from docx.shared import Pt, Inches, RGBColor
     from docx.oxml.ns import qn
 
-    # Try importing PyMuPDF for image extraction — optional
-    try:
-        import fitz
-        has_fitz = True
-    except ImportError:
-        has_fitz = False
-
     doc = Document()
-
-    # Set default margins
     for section in doc.sections:
         section.top_margin = Inches(0.75)
         section.bottom_margin = Inches(0.75)
@@ -246,33 +320,18 @@ def save_as_docx_native(input_path, output_path, uid):
             if page_index > 0:
                 doc.add_page_break()
 
-            # Get median font size for heading detection
+            page_w = float(page.width)
+            page_h = float(page.height)
             median_size = compute_median_font_size(page)
 
-            # Extract tables on this page
-            tables = page.extract_tables({
-                'vertical_strategy': 'lines',
-                'horizontal_strategy': 'lines',
-                'snap_tolerance': 3,
-                'join_tolerance': 3,
-                'edge_min_length': 3,
-                'min_words_vertical': 1,
-                'min_words_horizontal': 1,
-            })
+            # Extract tables using best available strategy
+            tables, y_positions, x_positions, rects = extract_tables_from_page(page)
+            table_bboxes = get_table_bboxes(page)
 
-            # Get table bounding boxes to exclude from text extraction
-            table_bboxes = []
-            try:
-                for table_obj in page.find_tables():
-                    table_bboxes.append(table_obj.bbox)
-            except:
-                pass
-
-            # Extract words outside tables
+            # Extract all words
             try:
                 all_words = page.extract_words(
-                    x_tolerance=3,
-                    y_tolerance=3,
+                    x_tolerance=3, y_tolerance=3,
                     keep_blank_chars=False,
                     use_text_flow=False,
                     extra_attrs=['fontname', 'size']
@@ -280,20 +339,13 @@ def save_as_docx_native(input_path, output_path, uid):
             except:
                 all_words = []
 
-            # Filter out words that fall inside table bboxes
-            text_words = [
-                w for w in all_words
-                if not bbox_overlaps_table(
-                    (float(w['x0']), float(w['top']), float(w['x1']), float(w['bottom'])),
-                    table_bboxes
-                )
-            ]
-
-            # If no native text at all, fall back to OCR
+            # If no text at all, use OCR
             if not all_words:
                 try:
                     import pytesseract
-                    imgs = convert_from_path(input_path, dpi=150, first_page=page_index+1, last_page=page_index+1)
+                    imgs = convert_from_path(input_path, dpi=150,
+                                            first_page=page_index+1,
+                                            last_page=page_index+1)
                     if imgs:
                         text = pytesseract.image_to_string(imgs[0], lang='eng+ara')
                         for line in text.split('\n'):
@@ -312,66 +364,63 @@ def save_as_docx_native(input_path, output_path, uid):
                     pass
                 continue
 
-            # Embed page images if PyMuPDF available
-            if has_fitz:
-                img_paths = extract_page_images(input_path, page_index, uid, OUTPUT_FOLDER)
-                for img_path in img_paths:
-                    try:
-                        # Skip tiny images (icons, artifacts)
-                        pil_img = Image.open(img_path)
-                        w_px, h_px = pil_img.size
-                        if w_px < 50 or h_px < 50:
-                            continue
-                        # Scale to fit page width
-                        max_width = Inches(6.5)
-                        doc.add_picture(img_path, width=max_width)
-                    except:
-                        pass
+            # Words outside tables → text paragraphs
+            text_words = [
+                w for w in all_words
+                if not bbox_overlaps(
+                    (float(w['x0']), float(w['top']),
+                     float(w['x1']), float(w['bottom'])),
+                    table_bboxes
+                )
+            ]
 
-            # Group text words into lines by vertical position
+            # Build events list: (y_position, type, content)
+            events = []
+
+            # Text line events
             lines_dict = {}
             for word in text_words:
                 y_key = round(float(word['top']) / 4) * 4
                 if y_key not in lines_dict:
                     lines_dict[y_key] = []
                 lines_dict[y_key].append(word)
-
-            # Track which y positions are covered by tables so we
-            # interleave text and tables in reading order
-            # Build a list of (y_position, type, content) events
-            events = []
-
-            # Add text lines as events
             for y_key, words in lines_dict.items():
                 events.append((y_key, 'text', words))
 
-            # Add tables as events using their top y position
+            # Table events
             try:
                 page_table_objs = list(page.find_tables())
             except:
                 page_table_objs = []
 
-            for t_idx, table_obj in enumerate(page_table_objs):
-                t_top = table_obj.bbox[1]
-                table_data = tables[t_idx] if t_idx < len(tables) else None
-                if table_data:
-                    events.append((t_top, 'table', table_data))
+            for t_idx, table_data in enumerate(tables):
+                if t_idx < len(page_table_objs):
+                    t_top = page_table_objs[t_idx].bbox[1]
+                elif table_bboxes:
+                    t_top = table_bboxes[0][1]
+                else:
+                    t_top = 0
+                events.append((t_top, 'table', (t_idx, table_data)))
 
-            # Sort all events by vertical position
             events.sort(key=lambda e: e[0])
 
             for _, event_type, content in events:
+
+                # ── Text paragraph ──────────────────────────────────────────
                 if event_type == 'text':
                     words = sorted(content, key=lambda w: float(w['x0']))
                     if not words:
                         continue
-
                     line_text = ' '.join(w['text'] for w in words).strip()
                     if not line_text:
                         continue
 
-                    # Detect font properties from the majority of words
-                    sizes = [get_font_size(w) for w in words]
+                    sizes = []
+                    for w in words:
+                        try:
+                            sizes.append(float(w.get('size', 12)))
+                        except:
+                            sizes.append(12.0)
                     avg_size = sum(sizes) / len(sizes) if sizes else 12.0
                     bold_count = sum(1 for w in words if is_bold(w))
                     mostly_bold = bold_count > len(words) / 2
@@ -383,30 +432,24 @@ def save_as_docx_native(input_path, output_path, uid):
                     para = doc.add_paragraph()
                     para.paragraph_format.space_before = Pt(0)
                     para.paragraph_format.space_after = Pt(2)
-
                     if rtl:
                         apply_rtl_to_paragraph(para)
 
                     run = para.add_run(line_text)
-                    run.bold = mostly_bold
-
-                    # Heading detection: significantly larger than median
-                    if avg_size > median_size * 1.3:
-                        run.font.size = Pt(min(avg_size, 24))
-                        run.bold = True
-                    else:
-                        run.font.size = Pt(max(8, min(avg_size, 72)))
-
+                    run.bold = mostly_bold or (avg_size > median_size * 1.3)
+                    run.font.size = Pt(min(max(8, avg_size), 72))
                     if rtl:
                         apply_rtl_to_run(run)
 
+                # ── Table ───────────────────────────────────────────────────
                 elif event_type == 'table':
-                    table_data = content
+                    t_idx, table_data = content
                     if not table_data:
                         continue
 
                     # Filter completely empty rows
-                    rows = [r for r in table_data if any(c and str(c).strip() for c in r)]
+                    rows = [r for r in table_data
+                            if any(c and str(c).strip() for c in r)]
                     if not rows:
                         continue
 
@@ -414,7 +457,7 @@ def save_as_docx_native(input_path, output_path, uid):
                     if num_cols == 0:
                         continue
 
-                    # Normalize rows to same column count
+                    # Normalize column count
                     norm_rows = []
                     for row in rows:
                         norm_row = list(row) + [None] * (num_cols - len(row))
@@ -423,19 +466,51 @@ def save_as_docx_native(input_path, output_path, uid):
                     tbl = doc.add_table(rows=len(norm_rows), cols=num_cols)
                     tbl.style = 'Table Grid'
 
+                    # Determine row y positions for color lookup
+                    # Use y_positions if available from rect-based extraction
+                    row_y_pairs = []
+                    if y_positions and len(y_positions) >= len(norm_rows) + 1:
+                        for i in range(len(norm_rows)):
+                            row_y_pairs.append((y_positions[i], y_positions[i+1]))
+                    else:
+                        row_y_pairs = [(0, 0)] * len(norm_rows)
+
+                    # Determine column x positions for color lookup
+                    col_x_pairs = []
+                    if x_positions and len(x_positions) >= num_cols + 1:
+                        for j in range(num_cols):
+                            col_x_pairs.append((x_positions[j], x_positions[j+1]))
+                    else:
+                        col_x_pairs = [(0, 0)] * num_cols
+
                     for r_idx, row in enumerate(norm_rows):
+                        y_top, y_bottom = row_y_pairs[r_idx] if r_idx < len(row_y_pairs) else (0, 0)
+
                         for c_idx, cell_val in enumerate(row):
                             cell = tbl.rows[r_idx].cells[c_idx]
                             text = str(cell_val).strip() if cell_val else ''
+                            if text == 'None':
+                                text = ''
 
-                            if not text or text == 'None':
+                            # Apply background color from PDF rects
+                            if y_top != y_bottom and c_idx < len(col_x_pairs):
+                                cx0, cx1 = col_x_pairs[c_idx]
+                                hex_color = get_rect_color_at(
+                                    rects, y_top, y_bottom, cx0, cx1, page_w, page_h
+                                )
+                                if hex_color:
+                                    try:
+                                        set_cell_background(cell, hex_color)
+                                    except:
+                                        pass
+
+                            if not text:
                                 continue
 
                             rtl = is_rtl_text(text)
                             if rtl:
                                 text = fix_rtl(text)
 
-                            # Clear default empty paragraph and set text
                             para = cell.paragraphs[0]
                             if rtl:
                                 apply_rtl_to_paragraph(para)
@@ -450,7 +525,7 @@ def save_as_docx_native(input_path, output_path, uid):
 
 
 def save_as_docx_text(input_path, output_path):
-    """OCR-based DOCX conversion for scanned PDFs."""
+    """OCR-based DOCX for scanned PDFs."""
     from docx import Document
     from docx.shared import Pt, Inches
 
@@ -462,18 +537,15 @@ def save_as_docx_text(input_path, output_path):
                 doc.add_page_break()
 
             section = doc.sections[-1]
-            page_width_inch = float(page.width) / 72
-            page_height_inch = float(page.height) / 72
-            section.page_width = Inches(page_width_inch)
-            section.page_height = Inches(page_height_inch)
+            section.page_width = Inches(float(page.width) / 72)
+            section.page_height = Inches(float(page.height) / 72)
             section.top_margin = Inches(0.75)
             section.bottom_margin = Inches(0.75)
             section.left_margin = Inches(0.75)
             section.right_margin = Inches(0.75)
 
             words = page.extract_words(
-                x_tolerance=3,
-                y_tolerance=3,
+                x_tolerance=3, y_tolerance=3,
                 keep_blank_chars=False,
                 use_text_flow=False,
                 extra_attrs=['fontname', 'size']
@@ -481,7 +553,8 @@ def save_as_docx_text(input_path, output_path):
 
             if not words:
                 import pytesseract
-                imgs = convert_from_path(input_path, dpi=150, first_page=i+1, last_page=i+1)
+                imgs = convert_from_path(input_path, dpi=150,
+                                        first_page=i+1, last_page=i+1)
                 if imgs:
                     text = pytesseract.image_to_string(imgs[0], lang='eng+ara')
                     for line in text.split('\n'):
@@ -597,7 +670,6 @@ def convert():
         if fmt in ('jpg', 'png'):
             save_fmt = 'JPEG' if fmt == 'jpg' else 'PNG'
             ext = fmt
-
             pages_param = request.form.get('pages', '').strip()
             if pages_param:
                 selected_indices = parse_pages(pages_param, len(images))
@@ -629,8 +701,6 @@ def convert():
             if mode == 'ocr':
                 save_as_docx_text(input_path, output_path)
             else:
-                # Both 'native' and 'image' modes use the new native converter
-                # Image-based fallback only if native fails
                 try:
                     save_as_docx_native(input_path, output_path, uid)
                 except Exception as e:
