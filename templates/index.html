@@ -52,7 +52,7 @@
   .mode-opt .mode-desc { font-size: 12px; color: #888; display: block; line-height: 1.4; }
   .recommended-badge { position: absolute; top: -10px; right: 10px; background: #4f46e5; color: white; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 99px; }
 
-  /* Formats — 5 cols on desktop, 3+2 on mobile */
+  /* Formats */
   .section-label { font-size: 12px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 12px; }
   .formats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 32px; }
   .fmt { border: 1.5px solid #e5e7eb; border-radius: 12px; padding: 14px 6px; text-align: center; cursor: pointer; transition: all 0.15s; background: #fafafa; }
@@ -88,17 +88,11 @@
     .drop-zone { padding: 32px 16px; }
     .drop-icon { font-size: 36px; }
     .drop-text { font-size: 14px; }
-
-    /* Format grid: 3 on first row, 2 centered on second row */
     .formats { grid-template-columns: repeat(3, 1fr); }
     .fmt { padding: 12px 4px; }
     .fmt .icon { font-size: 20px; }
     .fmt .ext { font-size: 12px; }
-
-    /* Mode options stack on mobile */
     .mode-options { grid-template-columns: 1fr; }
-
-    /* Page selector two cols stay, but smaller */
     .btn { padding: 14px; font-size: 15px; }
   }
 </style>
@@ -200,7 +194,6 @@
     return (b/1024/1024).toFixed(2) + ' MB';
   }
 
-  // Counts how many pages a page string like "1,3,5-7" resolves to
   function countSelectedPages(raw) {
     let count = 0;
     const parts = raw.split(',');
@@ -357,12 +350,16 @@
 
   function checkPageSelector() {
     const pageSelector = document.getElementById('pageSelector');
-    if (selectedFmt === 'jpg' || selectedFmt === 'png') {
+    // Only show page selector for image formats AND multi-page PDFs
+    if ((selectedFmt === 'jpg' || selectedFmt === 'png') && pageCount > 1) {
       pageSelector.style.display = 'block';
-      document.getElementById('allPagesDesc').textContent = pageCount === 1 ? 'Single image download' : `${pageCount} pages as ZIP file`;
-      document.getElementById('pageInputHint').textContent = `This PDF has ${pageCount} page${pageCount > 1 ? 's' : ''}`;
+      document.getElementById('allPagesDesc').textContent = `${pageCount} pages as ZIP file`;
+      document.getElementById('pageInputHint').textContent = `This PDF has ${pageCount} pages`;
     } else {
       pageSelector.style.display = 'none';
+      // Reset to 'all' when hidden so state is clean
+      selectedPages = 'all';
+      document.getElementById('pageInputArea').style.display = 'none';
     }
   }
 
@@ -407,7 +404,7 @@
           return false;
         }
         if (n > pageCount) {
-          errorEl.textContent = `❌ Page ${n} doesn't exist. This PDF only has ${pageCount} page${pageCount > 1 ? 's' : ''}.`;
+          errorEl.textContent = `❌ Page ${n} doesn't exist. This PDF only has ${pageCount} pages.`;
           errorEl.style.display = 'block';
           input.style.borderColor = '#dc2626';
           return false;
@@ -427,7 +424,7 @@
           return false;
         }
         if (end > pageCount) {
-          errorEl.textContent = `❌ Page ${end} doesn't exist. This PDF only has ${pageCount} page${pageCount > 1 ? 's' : ''}.`;
+          errorEl.textContent = `❌ Page ${end} doesn't exist. This PDF only has ${pageCount} pages.`;
           errorEl.style.display = 'block';
           input.style.borderColor = '#dc2626';
           return false;
