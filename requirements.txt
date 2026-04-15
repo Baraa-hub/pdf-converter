@@ -9,3 +9,4 @@ gunicorn
 pytesseract
 arabic-reshaper
 python-bidi
+pymupdf
