@@ -478,7 +478,13 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = selectedFile.name.replace('.pdf', '.' + selectedFmt);
+
+      // Fix: correct extension — zip for multi-page, image ext for single page
+      const isImageZip = (selectedFmt === 'jpg' || selectedFmt === 'png') && selectedPages === 'all' && pageCount > 1;
+      a.download = isImageZip
+        ? selectedFile.name.replace('.pdf', '.zip')
+        : selectedFile.name.replace('.pdf', '.' + selectedFmt);
+
       document.body.appendChild(a); a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
