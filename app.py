@@ -204,10 +204,14 @@ def get_rect_color_at(rects, y_top, y_bottom, x0, x1, page_w, page_h):
 
 def merge_split_cells(row):
     """
-    Merge cells where text appears to be split across boundaries.
-    e.g. ['Contra', 'ct Data', '', ...] → ['Contract Data', '', '', ...]
-    Strategy: if cell text doesn't end with space/punctuation and next cell
-    starts with lowercase or continues a word, merge them.
+    Merge cells where an English word is genuinely split mid-word across
+    a column boundary — e.g. ['Contra', 'ct Data'] → ['Contract Data'].
+
+    Rules (all must be true to merge):
+    1. Current cell ends with a letter (not space/punct/digit)
+    2. Next cell starts with a LOWERCASE letter (never digit — digits are values)
+    3. Neither cell is empty
+    4. Current cell is not purely Arabic/RTL text
     """
     if not row:
         return row
@@ -216,28 +220,24 @@ def merge_split_cells(row):
     i = 0
     while i < len(merged) - 1:
         cur = clean_text(str(merged[i]) if merged[i] else '')
-        nxt = clean_text(str(merged[i+1]) if merged[i+1] else '')
+        nxt = clean_text(str(merged[i + 1]) if merged[i + 1] else '')
 
         if not cur or not nxt:
             i += 1
             continue
 
-        # Detect split: current ends mid-word (no space, no punctuation)
-        # and next starts with lowercase or continues naturally
-        cur_ends_midword = (
-            len(cur) > 0 and
-            cur[-1].isalpha() and
-            not cur[-1].isspace()
-        )
-        nxt_starts_midword = (
-            len(nxt) > 0 and
-            (nxt[0].islower() or nxt[0].isdigit())
-        )
+        # Only merge if:
+        # - cur ends with an ASCII letter (no space, no punct, no digit)
+        # - nxt starts with a lowercase ASCII letter (word continuation)
+        # - cur is not purely RTL/Arabic
+        cur_ends_with_letter = cur[-1].isascii() and cur[-1].isalpha()
+        nxt_starts_lowercase = nxt[0].isascii() and nxt[0].islower()
+        cur_not_arabic = not is_rtl_text(cur)
 
-        if cur_ends_midword and nxt_starts_midword:
+        if cur_ends_with_letter and nxt_starts_lowercase and cur_not_arabic:
             merged[i] = cur + nxt
             merged.pop(i + 1)
-            # Don't increment i — check again in case of triple split
+            # Don't increment — check again for triple splits
         else:
             i += 1
 
@@ -257,7 +257,6 @@ def extract_page_images_pymupdf(input_path, page_index, uid, output_folder):
                 base_image = doc.extract_image(xref)
                 img_bytes = base_image['image']
                 img_ext = base_image.get('ext', 'png')
-                # Skip very small images (icons/artifacts)
                 w = base_image.get('width', 0)
                 h = base_image.get('height', 0)
                 if w < 50 or h < 50:
@@ -270,7 +269,6 @@ def extract_page_images_pymupdf(input_path, page_index, uid, output_folder):
                 pass
         doc.close()
     except ImportError:
-        # PyMuPDF not available — skip image extraction
         pass
     except Exception:
         pass
@@ -299,7 +297,7 @@ def save_as_docx_native(input_path, output_path, uid):
             rects = page.rects
             median_size = compute_median_font_size(page)
 
-            # ── Embed page images before table ─────────────────────────────
+            # Embed page images
             img_paths = extract_page_images_pymupdf(input_path, page_index, uid, OUTPUT_FOLDER)
             for img_path in img_paths:
                 try:
@@ -307,12 +305,11 @@ def save_as_docx_native(input_path, output_path, uid):
                     w_px, h_px = pil_img.size
                     if w_px < 50 or h_px < 50:
                         continue
-                    max_width = Inches(6.5)
-                    doc.add_picture(img_path, width=max_width)
+                    doc.add_picture(img_path, width=Inches(6.5))
                 except:
                     pass
 
-            # ── Detect tables via filled rects ─────────────────────────────
+            # Detect tables via filled rects
             cell_rects = [r for r in rects if
                           r['width'] < page_w * 0.95 and
                           r['height'] < page_h * 0.3 and
@@ -347,7 +344,6 @@ def save_as_docx_native(input_path, output_path, uid):
                     except:
                         pass
 
-            # Fallback: line-based detection
             if not has_table:
                 try:
                     tables = page.extract_tables({
@@ -362,15 +358,13 @@ def save_as_docx_native(input_path, output_path, uid):
                 except:
                     pass
 
-            # ── CASE 1: Page has table ──────────────────────────────────────
+            # CASE 1: Page has table
             if has_table and tables:
                 table_data = tables[0]
                 rows = [r for r in table_data if any(c and str(c).strip() for c in r)]
 
                 if rows:
-                    # Merge split cells before building DOCX table
                     rows = [merge_split_cells(r) for r in rows]
-
                     num_cols = max(len(r) for r in rows)
                     norm_rows = [list(r) + [None] * (num_cols - len(r)) for r in rows]
 
@@ -398,7 +392,6 @@ def save_as_docx_native(input_path, output_path, uid):
                             if text.lower() == 'none':
                                 text = ''
 
-                            # Background color from rects
                             if y_top != y_bottom and c_idx < len(col_x_spans):
                                 cx0, cx1 = col_x_spans[c_idx]
                                 hex_color = get_rect_color_at(
@@ -426,7 +419,7 @@ def save_as_docx_native(input_path, output_path, uid):
 
                     doc.add_paragraph()
 
-            # ── CASE 2: No table — text paragraphs ─────────────────────────
+            # CASE 2: No table — text paragraphs
             else:
                 try:
                     all_words = page.extract_words(
