@@ -52,7 +52,7 @@
   .mode-opt .mode-desc { font-size: 12px; color: #888; display: block; line-height: 1.4; }
   .recommended-badge { position: absolute; top: -10px; right: 10px; background: #4f46e5; color: white; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 99px; }
 
-  /* Formats */
+  /* Formats — 5 cols on desktop, 3+2 on mobile */
   .section-label { font-size: 12px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 12px; }
   .formats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 32px; }
   .fmt { border: 1.5px solid #e5e7eb; border-radius: 12px; padding: 14px 6px; text-align: center; cursor: pointer; transition: all 0.15s; background: #fafafa; }
@@ -78,6 +78,29 @@
   .status { display: none; margin-top: 18px; padding: 14px 18px; border-radius: 12px; font-size: 14px; font-weight: 500; }
   .status.error { background: #fef2f2; color: #991b1b; border: 1.5px solid #fecaca; }
   .status.success { background: #f0fdf4; color: #166534; border: 1.5px solid #86efac; }
+
+  /* ── Mobile responsive ── */
+  @media (max-width: 480px) {
+    body { padding: 12px; align-items: flex-start; }
+    .card { padding: 24px 18px; border-radius: 16px; }
+    h1 { font-size: 22px; }
+    .subtitle { font-size: 13px; margin-bottom: 24px; }
+    .drop-zone { padding: 32px 16px; }
+    .drop-icon { font-size: 36px; }
+    .drop-text { font-size: 14px; }
+
+    /* Format grid: 3 on first row, 2 centered on second row */
+    .formats { grid-template-columns: repeat(3, 1fr); }
+    .fmt { padding: 12px 4px; }
+    .fmt .icon { font-size: 20px; }
+    .fmt .ext { font-size: 12px; }
+
+    /* Mode options stack on mobile */
+    .mode-options { grid-template-columns: 1fr; }
+
+    /* Page selector two cols stay, but smaller */
+    .btn { padding: 14px; font-size: 15px; }
+  }
 </style>
 </head>
 <body>
@@ -502,10 +525,8 @@
         if (selectedPages === 'all') {
           numPages = pageCount;
         } else {
-          // Count how many pages the user actually selected
           numPages = countSelectedPages(document.getElementById('pageInput').value.trim());
         }
-        // Use .zip if more than 1 page, otherwise use the image extension
         downloadName = selectedFile.name.replace('.pdf', numPages > 1 ? '.zip' : '.' + selectedFmt);
       } else {
         downloadName = selectedFile.name.replace('.pdf', '.' + selectedFmt);
