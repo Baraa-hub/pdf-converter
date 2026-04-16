@@ -10,3 +10,4 @@ pytesseract
 arabic-reshaper
 python-bidi
 pymupdf
+openpyxl
