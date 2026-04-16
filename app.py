@@ -362,13 +362,21 @@ def save_as_docx_native(input_path, output_path, uid, pages_param=None):
             rects = page.rects
             median_size = compute_median_font_size(page)
 
-            # Embed page images
+            # Embed page images — but skip full-page images (they cause blank pages)
             img_paths = extract_page_images_pymupdf(input_path, page_index, uid, OUTPUT_FOLDER)
             for img_path in img_paths:
                 try:
                     pil_img = Image.open(img_path)
                     w_px, h_px = pil_img.size
                     if w_px < 50 or h_px < 50:
+                        continue
+                    # Skip images that are close to full-page size — these are
+                    # page backgrounds/renders, not embedded photos
+                    page_aspect = page_w / page_h if page_h > 0 else 1
+                    img_aspect = w_px / h_px if h_px > 0 else 1
+                    aspect_similar = abs(page_aspect - img_aspect) < 0.1
+                    # If image is large AND same aspect ratio as page → skip
+                    if aspect_similar and w_px > 400 and h_px > 400:
                         continue
                     doc.add_picture(img_path, width=Inches(6.5))
                 except:
