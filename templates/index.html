@@ -373,15 +373,48 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') prevPageBtn.click();
 });
 
-// ── Image Preview ──────────────────────────────────────────────────────────
-function loadImagePreview(file) {
+// ── Image Preview — navigate through multiple uploaded images ─────────────
+let imagePreviewIndex = 0;
+let imagePreviewFiles = [];
+
+function loadImagePreview(files, index) {
+  imagePreviewFiles = Array.isArray(files) ? files : [files];
+  imagePreviewIndex = index || 0;
+  const file = imagePreviewFiles[imagePreviewIndex];
   const url = URL.createObjectURL(file);
   const img = document.getElementById('imgPreview');
   img.onload = () => {
     previewLoading.style.display = 'none';
     img.style.display = 'block';
+    URL.revokeObjectURL(url);
   };
   img.src = url;
+  // Update navigation
+  const total = imagePreviewFiles.length;
+  if (total > 1) {
+    pageInfoEl.textContent = `${imagePreviewIndex + 1} / ${total}`;
+    prevPageBtn.disabled = imagePreviewIndex <= 0;
+    nextPageBtn.disabled = imagePreviewIndex >= total - 1;
+    // Override nav buttons for image mode
+    prevPageBtn.onclick = () => {
+      if (imagePreviewIndex > 0) {
+        hideAllPreviews();
+        previewLoading.style.display = 'block';
+        loadImagePreview(imagePreviewFiles, imagePreviewIndex - 1);
+      }
+    };
+    nextPageBtn.onclick = () => {
+      if (imagePreviewIndex < imagePreviewFiles.length - 1) {
+        hideAllPreviews();
+        previewLoading.style.display = 'block';
+        loadImagePreview(imagePreviewFiles, imagePreviewIndex + 1);
+      }
+    };
+  } else {
+    pageInfoEl.textContent = '';
+    prevPageBtn.disabled = true;
+    nextPageBtn.disabled = true;
+  }
 }
 
 // ── DOCX Preview (using mammoth.js) ───────────────────────────────────────
@@ -398,40 +431,85 @@ async function loadDocxPreview(file) {
   }
 }
 
-// ── XLSX Preview (using SheetJS) ───────────────────────────────────────────
+// ── XLSX Preview — with sheet tab navigation ───────────────────────────────
+let xlsxWorkbook = null;
+let xlsxSheetIndex = 0;
+
 async function loadXlsxPreview(file) {
   try {
     const ab = await file.arrayBuffer();
-    const wb = XLSX.read(ab, { type: 'array' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const html = XLSX.utils.sheet_to_html(ws, { id: 'xlsxTable', editable: false });
-    const container = document.getElementById('xlsxPreview');
-    container.innerHTML = html;
-    // Basic table styling
-    const table = container.querySelector('table');
-    if (table) {
-      table.style.borderCollapse = 'collapse';
-      table.style.fontSize = '12px';
-      table.style.width = '100%';
-    }
-    // Show sheet tabs if multiple sheets
-    if (wb.SheetNames.length > 1) {
-      pageInfoEl.textContent = `Sheet 1 of ${wb.SheetNames.length}`;
-    }
-    previewLoading.style.display = 'none';
-    container.style.display = 'block';
+    xlsxWorkbook = XLSX.read(ab, { type: 'array' });
+    xlsxSheetIndex = 0;
+    renderXlsxSheet(0);
   } catch(e) {
     previewLoading.textContent = 'XLSX preview unavailable';
   }
 }
 
-// ── PPTX Preview — server-side: LibreOffice renders first slide as image ──
-async function loadPptxPreview(file) {
+function renderXlsxSheet(idx) {
+  const wb = xlsxWorkbook;
+  const sheetName = wb.SheetNames[idx];
+  const ws = wb.Sheets[sheetName];
+  const html = XLSX.utils.sheet_to_html(ws, { editable: false });
+  const container = document.getElementById('xlsxPreview');
+
+  // Build sheet tabs
+  let tabsHtml = '<div style="display:flex;gap:4px;padding:8px 8px 0;background:#f0f0f0;flex-wrap:wrap;">';
+  wb.SheetNames.forEach((name, i) => {
+    const active = i === idx;
+    tabsHtml += `<button onclick="renderXlsxSheet(${i})" style="padding:4px 10px;border:1px solid #ccc;border-radius:6px 6px 0 0;background:${active?'white':'#e8e8e8'};font-weight:${active?'700':'400'};font-size:11px;cursor:pointer;border-bottom:${active?'2px solid #4f46e5':'1px solid #ccc'};color:${active?'#4f46e5':'#555'}">${name}</button>`;
+  });
+  tabsHtml += '</div>';
+
+  container.innerHTML = tabsHtml + `<div style="overflow:auto;padding:8px;">${html}</div>`;
+
+  // Style the table
+  const table = container.querySelector('table');
+  if (table) {
+    table.style.borderCollapse = 'collapse';
+    table.style.fontSize = '12px';
+    table.style.width = '100%';
+    table.querySelectorAll('td,th').forEach(cell => {
+      cell.style.border = '1px solid #ddd';
+      cell.style.padding = '4px 8px';
+      cell.style.whiteSpace = 'nowrap';
+    });
+  }
+
+  previewLoading.style.display = 'none';
+  container.style.display = 'block';
+
+  // Update nav info
+  if (wb.SheetNames.length > 1) {
+    pageInfoEl.textContent = `Sheet ${idx+1} / ${wb.SheetNames.length}`;
+    prevPageBtn.disabled = idx <= 0;
+    nextPageBtn.disabled = idx >= wb.SheetNames.length - 1;
+    prevPageBtn.onclick = () => { if(xlsxSheetIndex>0){xlsxSheetIndex--;renderXlsxSheet(xlsxSheetIndex);} };
+    nextPageBtn.onclick = () => { if(xlsxSheetIndex<wb.SheetNames.length-1){xlsxSheetIndex++;renderXlsxSheet(xlsxSheetIndex);} };
+  } else {
+    pageInfoEl.textContent = '';
+    prevPageBtn.disabled = true;
+    nextPageBtn.disabled = true;
+  }
+}
+
+// ── PPTX Preview — server renders each slide on demand ────────────────────
+let pptxFile = null;
+let pptxCurrentSlide = 1;
+let pptxTotalSlides = 1;
+
+async function loadPptxSlide(file, slideNum) {
   try {
+    previewLoading.style.display = 'block';
+    document.getElementById('imgPreview').style.display = 'none';
     const fd = new FormData();
     fd.append('file', file);
+    fd.append('slide', slideNum);
     const res = await fetch('/preview-pptx', { method: 'POST', body: fd });
     if (!res.ok) throw new Error('Server render failed');
+    // Get total slides from response header
+    const total = parseInt(res.headers.get('X-Total-Slides') || '1');
+    pptxTotalSlides = total;
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const img = document.getElementById('imgPreview');
@@ -441,25 +519,30 @@ async function loadPptxPreview(file) {
       URL.revokeObjectURL(url);
     };
     img.src = url;
+    // Update navigation
+    pageInfoEl.textContent = `Slide ${slideNum} / ${total}`;
+    prevPageBtn.disabled = slideNum <= 1;
+    nextPageBtn.disabled = slideNum >= total;
+    prevPageBtn.onclick = async () => {
+      if (pptxCurrentSlide > 1) { pptxCurrentSlide--; await loadPptxSlide(pptxFile, pptxCurrentSlide); }
+    };
+    nextPageBtn.onclick = async () => {
+      if (pptxCurrentSlide < pptxTotalSlides) { pptxCurrentSlide++; await loadPptxSlide(pptxFile, pptxCurrentSlide); }
+    };
   } catch(e) {
-    // Fallback to file info card
-    const container = document.getElementById('pptxPreview');
-    container.innerHTML = `
-      <div style="padding:20px; text-align:center; color:#555;">
-        <div style="font-size:40px; margin-bottom:12px;">📽️</div>
-        <div style="font-weight:700; font-size:15px; margin-bottom:6px;">${file.name}</div>
-        <div style="font-size:13px; color:#888;">PowerPoint • ${formatBytes(file.size)}</div>
-        <div style="margin-top:16px; padding:12px; background:#f5f3ff; border-radius:8px; font-size:12px; color:#5b21b6;">
-          Preview will be available after converting to PDF
-        </div>
-      </div>`;
-    previewLoading.style.display = 'none';
-    container.style.display = 'block';
+    previewLoading.textContent = 'Preview unavailable';
   }
 }
 
+async function loadPptxPreview(file) {
+  pptxFile = file;
+  pptxCurrentSlide = 1;
+  await loadPptxSlide(file, 1);
+}
+
 // ── Master preview dispatcher ──────────────────────────────────────────────
-async function showPreview(file, type) {
+async function showPreview(fileOrFiles, type) {
+  const file = Array.isArray(fileOrFiles) ? fileOrFiles[0] : fileOrFiles;
   showPreviewLoading(file.name);
   hideAllPreviews();
   previewLoading.style.display = 'block';
@@ -467,15 +550,17 @@ async function showPreview(file, type) {
   if (type === 'pdf') {
     if (pdfFileUrl) URL.revokeObjectURL(pdfFileUrl);
     pdfFileUrl = URL.createObjectURL(file);
+    // Reset PDF nav to default
+    prevPageBtn.onclick = async () => { if(currentPage>1){currentPage--;await renderPDFPage(currentPage);} };
+    nextPageBtn.onclick = async () => { if(pdfDoc&&currentPage<pdfDoc.numPages){currentPage++;await renderPDFPage(currentPage);} };
     await loadPDFPreview(pdfFileUrl);
   } else if (type === 'image') {
-    loadImagePreview(file);
+    loadImagePreview(Array.isArray(fileOrFiles) ? fileOrFiles : [file], 0);
   } else if (type === 'docx') {
     await loadDocxPreview(file);
   } else if (type === 'xlsx') {
     await loadXlsxPreview(file);
   } else if (type === 'pptx') {
-    // Server renders first slide as image — reuses imgPreview element
     await loadPptxPreview(file);
   }
 }
@@ -721,16 +806,16 @@ toPdfDropZone.addEventListener('drop',e=>{e.preventDefault();toPdfDropZone.class
 toPdfFileInput.addEventListener('change',e=>handleToPdfFiles(e.target.files));
 
 async function handleToPdfFiles(fileList) {
-  const newFiles=Array.from(fileList);
-  if(toPdfFmt==='image') toPdfFiles=[...toPdfFiles,...newFiles];
-  else toPdfFiles=[newFiles[0]];
+  const newFiles = Array.from(fileList);
+  if (toPdfFmt === 'image') toPdfFiles = [...toPdfFiles, ...newFiles];
+  else toPdfFiles = [newFiles[0]];
   renderFilesList();
-  toPdfBtn.disabled=toPdfFiles.length===0;
-  toPdfFileInput.value='';
-  // Show preview for the first/only file
-  if(toPdfFiles.length>0){
-    const f=toPdfFiles[0];
-    await showPreview(f, toPdfFmt);
+  toPdfBtn.disabled = toPdfFiles.length === 0;
+  toPdfFileInput.value = '';
+  // Show preview — pass all files for images so navigation works
+  if (toPdfFiles.length > 0) {
+    if (toPdfFmt === 'image') await showPreview(toPdfFiles, 'image');
+    else await showPreview(toPdfFiles[0], toPdfFmt);
   }
 }
 
@@ -746,9 +831,15 @@ function renderFilesList() {
 }
 
 function removeToPdfFile(idx) {
-  toPdfFiles.splice(idx,1); renderFilesList(); toPdfBtn.disabled=toPdfFiles.length===0;
-  if(toPdfFiles.length>0) showPreview(toPdfFiles[0],toPdfFmt);
-  else previewPanel.classList.remove('visible');
+  toPdfFiles.splice(idx, 1);
+  renderFilesList();
+  toPdfBtn.disabled = toPdfFiles.length === 0;
+  if (toPdfFiles.length > 0) {
+    if (toPdfFmt === 'image') showPreview(toPdfFiles, 'image');
+    else showPreview(toPdfFiles[0], toPdfFmt);
+  } else {
+    previewPanel.classList.remove('visible');
+  }
 }
 
 toPdfBtn.addEventListener('click', async()=>{
