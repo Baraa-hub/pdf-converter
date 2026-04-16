@@ -1,783 +1,548 @@
-from flask import Flask, request, send_file, render_template, jsonify
-import os, uuid, zipfile, base64, re, unicodedata, traceback
-from werkzeug.utils import secure_filename
-from pdf2image import convert_from_path
-from PIL import Image
-import pdfplumber
-
-app = Flask(__name__, static_folder='static')
-UPLOAD_FOLDER = '/tmp/uploads'
-OUTPUT_FOLDER = '/tmp/outputs'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-
-def detect_pdf_type(input_path):
-    try:
-        with pdfplumber.open(input_path) as pdf:
-            has_text = False
-            has_images = False
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text and len(text.strip()) > 50:
-                    has_text = True
-                if page.images:
-                    has_images = True
-                if has_text and has_images:
-                    break
-            if has_text and has_images:
-                return 'mixed'
-            elif has_text:
-                return 'text'
-            else:
-                return 'scanned'
-    except:
-        return 'scanned'
-
-def pdf_to_images(input_path, dpi=120):
-    return convert_from_path(input_path, dpi=dpi, thread_count=1, use_cropbox=True, strict=False)
-
-def ocr_images(images):
-    import pytesseract
-    return [pytesseract.image_to_string(img, lang='eng+ara') for img in images]
-
-def is_rtl_text(text):
-    return any(unicodedata.bidirectional(c) in ('R', 'AL') for c in text if c.strip())
-
-def fix_rtl(line):
-    from bidi.algorithm import get_display
-    return get_display(line)
-
-def clean_text(text):
-    if not text:
-        return ''
-    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-    text = text.replace('\n', ' ').replace('\r', ' ')
-    text = re.sub(r' +', ' ', text).strip()
-    return text
-
-def save_image_file(img, path, save_fmt):
-    img = img.copy()
-    if save_fmt == 'JPEG':
-        if img.mode in ('RGBA', 'LA', 'P'):
-            background = Image.new('RGB', img.size, (255, 255, 255))
-            if img.mode == 'P':
-                img = img.convert('RGBA')
-            if img.mode in ('RGBA', 'LA'):
-                background.paste(img, mask=img.split()[-1])
-            img = background
-        elif img.mode != 'RGB':
-            img = img.convert('RGB')
-        img.save(path, 'JPEG', quality=95)
-    else:
-        if img.mode not in ('RGB', 'RGBA'):
-            img = img.convert('RGB')
-        img.save(path, 'PNG')
-
-def save_as_docx_images(images, output_path, uid):
-    from docx import Document
-    from docx.shared import Inches
-    doc = Document()
-    for i, img in enumerate(images):
-        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
-        save_image_file(img, img_path, 'PNG')
-        if i > 0:
-            doc.add_page_break()
-        doc.add_picture(img_path, width=Inches(6.5))
-    doc.save(output_path)
-
-def save_as_pptx_images(images, output_path, uid):
-    from pptx import Presentation
-    from pptx.util import Inches, Emu
-    first_img = images[0]
-    img_w, img_h = first_img.size
-    slide_w = Inches(10)
-    slide_h = Emu(int(slide_w * img_h / img_w))
-    prs = Presentation()
-    prs.slide_width = slide_w
-    prs.slide_height = slide_h
-    blank_layout = prs.slide_layouts[6]
-    for i, img in enumerate(images):
-        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
-        save_image_file(img, img_path, 'PNG')
-        slide = prs.slides.add_slide(blank_layout)
-        slide.shapes.add_picture(img_path, 0, 0, width=slide_w, height=slide_h)
-    prs.save(output_path)
-
-def save_as_html_images(images, output_path, uid):
-    pages_html = ''
-    for i, img in enumerate(images):
-        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
-        save_image_file(img, img_path, 'PNG')
-        with open(img_path, 'rb') as f:
-            b64 = base64.b64encode(f.read()).decode()
-        pages_html += f'<div class="page"><img src="data:image/png;base64,{b64}" alt="Page {i+1}"></div>\n'
-    html = f'''<!DOCTYPE html>
-<html><head><meta charset="UTF-8">
+<!DOCTYPE html>
+<html lang="en">
+<head><link rel="icon" href="/static/favicon.ico">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PDF Converter</title>
 <style>
-body{{margin:0;padding:20px;background:#666;display:flex;flex-direction:column;align-items:center}}
-.page{{margin:10px 0;box-shadow:0 4px 12px rgba(0,0,0,0.4)}}
-.page img{{display:block;max-width:900px;width:100%}}
-</style></head>
-<body>{pages_html}</body></html>'''
-    with open(output_path, 'w') as f:
-        f.write(html)
-
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-def rgb_to_hex(color):
-    try:
-        if isinstance(color, (list, tuple)) and len(color) == 3:
-            r, g, b = [int(round(c * 255)) for c in color]
-            return f'{r:02X}{g:02X}{b:02X}'
-        if isinstance(color, (list, tuple)) and len(color) == 1:
-            v = int(round(color[0] * 255))
-            return f'{v:02X}{v:02X}{v:02X}'
-    except:
-        pass
-    return None
-
-def is_bold(word):
-    fontname = word.get('fontname', '')
-    return any(b in fontname.lower() for b in ['bold', 'black', 'heavy', 'semibold', 'demi'])
-
-def apply_rtl_to_paragraph(para):
-    from docx.oxml.ns import qn
-    from docx.oxml import OxmlElement
-    pPr = para._p.get_or_add_pPr()
-    bidi_el = OxmlElement('w:bidi')
-    pPr.append(bidi_el)
-    para.alignment = 2
-
-def apply_rtl_to_run(run):
-    from docx.oxml import OxmlElement
-    rPr = run._r.get_or_add_rPr()
-    rtl_el = OxmlElement('w:rtl')
-    rPr.append(rtl_el)
-
-def set_cell_background(cell, hex_color):
-    from docx.oxml.ns import qn
-    from docx.oxml import OxmlElement
-    tc = cell._tc
-    tcPr = tc.get_or_add_tcPr()
-    shd = OxmlElement('w:shd')
-    shd.set(qn('w:val'), 'clear')
-    shd.set(qn('w:color'), 'auto')
-    shd.set(qn('w:fill'), hex_color)
-    tcPr.append(shd)
-
-def compute_median_font_size(page):
-    sizes = []
-    try:
-        words = page.extract_words(extra_attrs=['size'])
-        for w in words:
-            try:
-                sizes.append(float(w.get('size', 12)))
-            except:
-                pass
-    except:
-        pass
-    if not sizes:
-        return 12.0
-    sizes.sort()
-    return sizes[len(sizes) // 2]
-
-def get_rect_color_at(rects, y_top, y_bottom, x0, x1, page_w, page_h):
-    best_color = None
-    best_area = 0
-    for r in rects:
-        if r['width'] > page_w * 0.95 and r['height'] > page_h * 0.5:
-            continue
-        oy0 = max(r['top'], y_top)
-        oy1 = min(r['bottom'], y_bottom)
-        ox0 = max(r['x0'], x0)
-        ox1 = min(r['x1'], x1)
-        if oy1 > oy0 and ox1 > ox0:
-            area = (oy1 - oy0) * (ox1 - ox0)
-            if area > best_area:
-                color = r.get('non_stroking_color')
-                if color is not None:
-                    hex_c = rgb_to_hex(color)
-                    if hex_c and hex_c.upper() not in ('FFFFFF', 'FEFEFE', 'FDFDFD'):
-                        best_color = hex_c
-                        best_area = area
-    return best_color
-
-def merge_split_cells(row):
-    """
-    Merge cells where an English word is split mid-word across column boundary.
-    Only merges when: cur ends with ASCII letter AND next starts with lowercase ASCII letter.
-    Never merges when next cell starts with digit (digits = values, not continuations).
-    """
-    if not row:
-        return row
-    merged = list(row)
-    i = 0
-    while i < len(merged) - 1:
-        cur = clean_text(str(merged[i]) if merged[i] else '')
-        nxt = clean_text(str(merged[i + 1]) if merged[i + 1] else '')
-        if not cur or not nxt:
-            i += 1
-            continue
-        cur_ends_with_ascii_letter = cur[-1].isascii() and cur[-1].isalpha()
-        nxt_starts_lowercase_ascii = nxt[0].isascii() and nxt[0].islower()
-        cur_not_arabic = not is_rtl_text(cur)
-        if cur_ends_with_ascii_letter and nxt_starts_lowercase_ascii and cur_not_arabic:
-            merged[i] = cur + nxt
-            merged.pop(i + 1)
-        else:
-            i += 1
-    return merged
-
-def extract_page_images_pymupdf(input_path, page_index, uid, output_folder):
-    saved = []
-    try:
-        import fitz
-        doc = fitz.open(input_path)
-        page = doc[page_index]
-        image_list = page.get_images(full=True)
-        for img_index, img in enumerate(image_list):
-            xref = img[0]
-            try:
-                base_image = doc.extract_image(xref)
-                img_bytes = base_image['image']
-                img_ext = base_image.get('ext', 'png')
-                w = base_image.get('width', 0)
-                h = base_image.get('height', 0)
-                if w < 50 or h < 50:
-                    continue
-                img_path = os.path.join(output_folder, f'{uid}_pg{page_index}_img{img_index}.{img_ext}')
-                with open(img_path, 'wb') as f:
-                    f.write(img_bytes)
-                saved.append(img_path)
-            except:
-                pass
-        doc.close()
-    except ImportError:
-        pass
-    except Exception:
-        pass
-    return saved
-
-# ── Debug endpoint ─────────────────────────────────────────────────────────────
-
-@app.route('/debug', methods=['POST'])
-def debug():
-    """Upload a PDF and get a diagnostic report of what the server sees."""
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file'}), 400
-    file = request.files['file']
-    uid = str(uuid.uuid4())[:8]
-    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
-    file.save(input_path)
-
-    report = {'pages': []}
-    try:
-        with pdfplumber.open(input_path) as pdf:
-            report['page_count'] = len(pdf.pages)
-            for page_index, page in enumerate(pdf.pages[:2]):  # Only check first 2 pages
-                page_w = float(page.width)
-                page_h = float(page.height)
-                rects = page.rects
-
-                cell_rects = [r for r in rects if
-                              r['width'] < page_w * 0.95 and
-                              r['height'] < page_h * 0.3 and
-                              r['width'] > 5 and r['height'] > 5]
-
-                page_info = {
-                    'page': page_index + 1,
-                    'total_rects': len(rects),
-                    'cell_rects': len(cell_rects),
-                    'tables_found': 0,
-                    'table_rows': 0,
-                    'table_cols': 0,
-                    'error': None,
-                    'sample_row': None,
-                }
-
-                if cell_rects:
-                    y_pos = sorted(set(
-                        [round(r['top'], 1) for r in cell_rects] +
-                        [round(r['bottom'], 1) for r in cell_rects]
-                    ))
-                    x_pos = sorted(set(
-                        [round(r['x0'], 1) for r in cell_rects] +
-                        [round(r['x1'], 1) for r in cell_rects]
-                    ))
-                    page_info['y_pos_count'] = len(y_pos)
-                    page_info['x_pos_count'] = len(x_pos)
-
-                    try:
-                        tables = page.extract_tables({
-                            'vertical_strategy': 'explicit',
-                            'horizontal_strategy': 'explicit',
-                            'explicit_vertical_lines': x_pos,
-                            'explicit_horizontal_lines': y_pos,
-                            'snap_tolerance': 4,
-                            'join_tolerance': 4,
-                        }) or []
-                        page_info['tables_found'] = len(tables)
-                        if tables:
-                            page_info['table_rows'] = len(tables[0])
-                            page_info['table_cols'] = len(tables[0][0]) if tables[0] else 0
-                            if tables[0]:
-                                page_info['sample_row'] = [str(c)[:20] if c else '' for c in tables[0][2]] if len(tables[0]) > 2 else []
-                    except Exception as e:
-                        page_info['error'] = traceback.format_exc()
-
-                report['pages'].append(page_info)
-    except Exception as e:
-        report['fatal_error'] = traceback.format_exc()
-    finally:
-        if os.path.exists(input_path):
-            os.remove(input_path)
-
-    return jsonify(report)
-
-# ── Main native DOCX converter ─────────────────────────────────────────────────
-
-def save_as_docx_native(input_path, output_path, uid):
-    from docx import Document
-    from docx.shared import Pt, Inches
-
-    doc = Document()
-    for section in doc.sections:
-        section.top_margin = Inches(0.75)
-        section.bottom_margin = Inches(0.75)
-        section.left_margin = Inches(0.75)
-        section.right_margin = Inches(0.75)
-
-    with pdfplumber.open(input_path) as pdf:
-        for page_index, page in enumerate(pdf.pages):
-            if page_index > 0:
-                doc.add_page_break()
-
-            page_w = float(page.width)
-            page_h = float(page.height)
-            rects = page.rects
-            median_size = compute_median_font_size(page)
-
-            # Embed page images
-            img_paths = extract_page_images_pymupdf(input_path, page_index, uid, OUTPUT_FOLDER)
-            for img_path in img_paths:
-                try:
-                    pil_img = Image.open(img_path)
-                    w_px, h_px = pil_img.size
-                    if w_px < 50 or h_px < 50:
-                        continue
-                    doc.add_picture(img_path, width=Inches(6.5))
-                except:
-                    pass
-
-            # Detect tables via filled rects
-            cell_rects = [r for r in rects if
-                          r['width'] < page_w * 0.95 and
-                          r['height'] < page_h * 0.3 and
-                          r['width'] > 5 and r['height'] > 5]
-
-            has_table = False
-            tables = []
-            y_pos = []
-            x_pos = []
-
-            if cell_rects:
-                y_pos = sorted(set(
-                    [round(r['top'], 1) for r in cell_rects] +
-                    [round(r['bottom'], 1) for r in cell_rects]
-                ))
-                x_pos = sorted(set(
-                    [round(r['x0'], 1) for r in cell_rects] +
-                    [round(r['x1'], 1) for r in cell_rects]
-                ))
-                if len(y_pos) >= 2 and len(x_pos) >= 2:
-                    try:
-                        tables = page.extract_tables({
-                            'vertical_strategy': 'explicit',
-                            'horizontal_strategy': 'explicit',
-                            'explicit_vertical_lines': x_pos,
-                            'explicit_horizontal_lines': y_pos,
-                            'snap_tolerance': 4,
-                            'join_tolerance': 4,
-                        }) or []
-                        if tables:
-                            has_table = True
-                    except:
-                        pass
-
-            if not has_table:
-                try:
-                    tables = page.extract_tables({
-                        'vertical_strategy': 'lines',
-                        'horizontal_strategy': 'lines',
-                        'snap_tolerance': 3,
-                    }) or []
-                    if tables:
-                        has_table = True
-                        y_pos = []
-                        x_pos = []
-                except:
-                    pass
-
-            if has_table and tables:
-                table_data = tables[0]
-                rows = [r for r in table_data if any(c and str(c).strip() for c in r)]
-
-                if rows:
-                    rows = [merge_split_cells(r) for r in rows]
-                    num_cols = max(len(r) for r in rows)
-                    norm_rows = [list(r) + [None] * (num_cols - len(r)) for r in rows]
-
-                    tbl = doc.add_table(rows=len(norm_rows), cols=num_cols)
-                    tbl.style = 'Table Grid'
-
-                    row_y_spans = []
-                    if len(y_pos) >= 2:
-                        row_y_spans = [(y_pos[i], y_pos[i+1]) for i in range(len(y_pos)-1)]
-
-                    col_x_spans = []
-                    if len(x_pos) >= 2:
-                        col_x_spans = [(x_pos[j], x_pos[j+1]) for j in range(min(num_cols, len(x_pos)-1))]
-
-                    orig_indices = [i for i, r in enumerate(table_data)
-                                    if any(c and str(c).strip() for c in r)]
-
-                    for r_idx, row in enumerate(norm_rows):
-                        orig_r = orig_indices[r_idx] if r_idx < len(orig_indices) else r_idx
-                        y_top, y_bottom = row_y_spans[orig_r] if orig_r < len(row_y_spans) else (0, 0)
-
-                        for c_idx, cell_val in enumerate(row):
-                            cell = tbl.rows[r_idx].cells[c_idx]
-                            text = clean_text(str(cell_val) if cell_val else '')
-                            if text.lower() == 'none':
-                                text = ''
-
-                            if y_top != y_bottom and c_idx < len(col_x_spans):
-                                cx0, cx1 = col_x_spans[c_idx]
-                                hex_color = get_rect_color_at(
-                                    rects, y_top, y_bottom, cx0, cx1, page_w, page_h)
-                                if hex_color:
-                                    try:
-                                        set_cell_background(cell, hex_color)
-                                    except:
-                                        pass
-
-                            if not text:
-                                continue
-
-                            rtl = is_rtl_text(text)
-                            if rtl:
-                                text = fix_rtl(text)
-
-                            para = cell.paragraphs[0]
-                            if rtl:
-                                apply_rtl_to_paragraph(para)
-                            run = para.add_run(text)
-                            run.font.size = Pt(10)
-                            if rtl:
-                                apply_rtl_to_run(run)
-
-                    doc.add_paragraph()
-
-            else:
-                try:
-                    all_words = page.extract_words(
-                        x_tolerance=3, y_tolerance=3,
-                        keep_blank_chars=False,
-                        use_text_flow=False,
-                        extra_attrs=['fontname', 'size']
-                    )
-                except:
-                    all_words = []
-
-                if not all_words:
-                    try:
-                        import pytesseract
-                        imgs = convert_from_path(input_path, dpi=150,
-                                                first_page=page_index+1,
-                                                last_page=page_index+1)
-                        if imgs:
-                            text = pytesseract.image_to_string(imgs[0], lang='eng+ara')
-                            for line in text.split('\n'):
-                                line = clean_text(line)
-                                if line:
-                                    para = doc.add_paragraph()
-                                    rtl = is_rtl_text(line)
-                                    if rtl:
-                                        line = fix_rtl(line)
-                                        apply_rtl_to_paragraph(para)
-                                    run = para.add_run(line)
-                                    run.font.size = Pt(11)
-                                    if rtl:
-                                        apply_rtl_to_run(run)
-                    except:
-                        pass
-                    continue
-
-                lines_dict = {}
-                for word in all_words:
-                    y_key = round(float(word['top']) / 4) * 4
-                    if y_key not in lines_dict:
-                        lines_dict[y_key] = []
-                    lines_dict[y_key].append(word)
-
-                for y_key in sorted(lines_dict.keys()):
-                    words = sorted(lines_dict[y_key], key=lambda w: float(w['x0']))
-                    line_text = clean_text(' '.join(w['text'] for w in words))
-                    if not line_text:
-                        continue
-
-                    sizes = []
-                    for w in words:
-                        try:
-                            sizes.append(float(w.get('size', 12)))
-                        except:
-                            sizes.append(12.0)
-                    avg_size = sum(sizes) / len(sizes) if sizes else 12.0
-                    bold_count = sum(1 for w in words if is_bold(w))
-                    mostly_bold = bold_count > len(words) / 2
-                    rtl = is_rtl_text(line_text)
-
-                    if rtl:
-                        line_text = fix_rtl(line_text)
-
-                    para = doc.add_paragraph()
-                    para.paragraph_format.space_before = Pt(0)
-                    para.paragraph_format.space_after = Pt(2)
-                    if rtl:
-                        apply_rtl_to_paragraph(para)
-
-                    run = para.add_run(line_text)
-                    run.bold = mostly_bold or (avg_size > median_size * 1.3)
-                    run.font.size = Pt(min(max(8, avg_size), 72))
-                    if rtl:
-                        apply_rtl_to_run(run)
-
-    doc.save(output_path)
-
-
-def save_as_docx_text(input_path, output_path):
-    from docx import Document
-    from docx.shared import Pt, Inches
-
-    doc = Document()
-
-    with pdfplumber.open(input_path) as pdf:
-        for i, page in enumerate(pdf.pages):
-            if i > 0:
-                doc.add_page_break()
-
-            section = doc.sections[-1]
-            section.page_width = Inches(float(page.width) / 72)
-            section.page_height = Inches(float(page.height) / 72)
-            section.top_margin = Inches(0.75)
-            section.bottom_margin = Inches(0.75)
-            section.left_margin = Inches(0.75)
-            section.right_margin = Inches(0.75)
-
-            words = page.extract_words(
-                x_tolerance=3, y_tolerance=3,
-                keep_blank_chars=False,
-                use_text_flow=False,
-                extra_attrs=['fontname', 'size']
-            )
-
-            if not words:
-                import pytesseract
-                imgs = convert_from_path(input_path, dpi=150,
-                                        first_page=i+1, last_page=i+1)
-                if imgs:
-                    text = pytesseract.image_to_string(imgs[0], lang='eng+ara')
-                    for line in text.split('\n'):
-                        line = clean_text(line)
-                        if line:
-                            para = doc.add_paragraph()
-                            rtl = is_rtl_text(line)
-                            if rtl:
-                                line = fix_rtl(line)
-                                apply_rtl_to_paragraph(para)
-                            run = para.add_run(line)
-                            run.font.size = Pt(11)
-                            if rtl:
-                                apply_rtl_to_run(run)
-                continue
-
-            native_text = page.extract_text(x_tolerance=3, y_tolerance=3)
-            if native_text and native_text.strip():
-                for line in native_text.split('\n'):
-                    line = clean_text(line)
-                    if line:
-                        para = doc.add_paragraph()
-                        rtl = is_rtl_text(line)
-                        if rtl:
-                            line = fix_rtl(line)
-                            apply_rtl_to_paragraph(para)
-                        run = para.add_run(line)
-                        run.font.size = Pt(12)
-                        if rtl:
-                            apply_rtl_to_run(run)
-                continue
-
-            lines = {}
-            for word in words:
-                y_key = round(float(word['top']) / 5) * 5
-                if y_key not in lines:
-                    lines[y_key] = []
-                lines[y_key].append(word)
-
-            for y_key in sorted(lines.keys()):
-                line_words = sorted(lines[y_key], key=lambda w: float(w['x0']))
-                para = doc.add_paragraph()
-                para.paragraph_format.space_before = Pt(0)
-                para.paragraph_format.space_after = Pt(0)
-                for word in line_words:
-                    run = para.add_run(clean_text(word['text']) + ' ')
-                    try:
-                        size = float(word.get('size', 12))
-                        run.font.size = Pt(max(6, min(size, 72)))
-                    except:
-                        run.font.size = Pt(12)
-
-    doc.save(output_path)
-
-
-def parse_pages(pages_param, total):
-    indices = []
-    for part in pages_param.split(','):
-        part = part.strip()
-        if '-' in part:
-            try:
-                parts = part.split('-')
-                start = int(parts[0].strip())
-                end = int(parts[1].strip())
-                indices += list(range(start - 1, end))
-            except:
-                pass
-        else:
-            try:
-                indices.append(int(part) - 1)
-            except:
-                pass
-    return sorted(set([i for i in indices if 0 <= i < total]))
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/detect', methods=['POST'])
-def detect():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file'}), 400
-    file = request.files['file']
-    if not file.filename.endswith('.pdf'):
-        return jsonify({'error': 'Not a PDF'}), 400
-    uid = str(uuid.uuid4())[:8]
-    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
-    file.save(input_path)
-    pdf_type = detect_pdf_type(input_path)
-    with pdfplumber.open(input_path) as pdf:
-        page_count = len(pdf.pages)
-    return jsonify({'type': pdf_type, 'uid': uid, 'page_count': page_count})
-
-@app.route('/convert', methods=['POST'])
-def convert():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
-    file = request.files['file']
-    fmt = request.form.get('format', 'jpg').lower()
-    mode = request.form.get('mode', 'image')
-    if file.filename == '' or not file.filename.endswith('.pdf'):
-        return jsonify({'error': 'Please upload a valid PDF'}), 400
-
-    uid = str(uuid.uuid4())[:8]
-    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
-    file.save(input_path)
-    base_name = secure_filename(file.filename).replace('.pdf', '').replace('.', '_')
-
-    try:
-        with pdfplumber.open(input_path) as pdf:
-            page_count = len(pdf.pages)
-        dpi = 150 if page_count <= 5 else 80
-        images = pdf_to_images(input_path, dpi=dpi)
-
-        if fmt in ('jpg', 'png'):
-            save_fmt = 'JPEG' if fmt == 'jpg' else 'PNG'
-            ext = fmt
-            pages_param = request.form.get('pages', '').strip()
-            if pages_param:
-                selected_indices = parse_pages(pages_param, len(images))
-                if not selected_indices:
-                    return jsonify({'error': 'No valid pages selected. Use format like: 1, 3, 5-7'}), 400
-                selected_images = [images[i] for i in selected_indices]
-            else:
-                selected_images = images
-
-            if len(selected_images) == 1:
-                output_filename = f'{base_name}_converted.{ext}'
-                output_path = os.path.join(OUTPUT_FOLDER, output_filename)
-                save_image_file(selected_images[0], output_path, save_fmt)
-            else:
-                output_filename = f'{base_name}_converted.zip'
-                output_path = os.path.join(OUTPUT_FOLDER, output_filename)
-                img_paths = []
-                for i, img in enumerate(selected_images):
-                    img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.{ext}')
-                    save_image_file(img, img_path, save_fmt)
-                    img_paths.append((img_path, f'page{i+1}.{ext}'))
-                with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    for img_path, arcname in img_paths:
-                        zf.write(img_path, arcname)
-
-        elif fmt == 'docx':
-            output_filename = f'{base_name}_converted.docx'
-            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
-            if mode == 'ocr':
-                save_as_docx_text(input_path, output_path)
-            elif mode == 'image':
-                save_as_docx_images(images, output_path, uid)
-            else:
-                # native mode — extract tables and text
-                save_as_docx_native(input_path, output_path, uid)
-
-        elif fmt == 'pptx':
-            output_filename = f'{base_name}_converted.pptx'
-            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
-            if mode == 'ocr':
-                from pptx import Presentation
-                from pptx.util import Inches, Emu
-                pages_text = ocr_images(images)
-                first_img = images[0]
-                slide_w = Inches(10)
-                slide_h = Emu(int(slide_w * first_img.size[1] / first_img.size[0]))
-                prs = Presentation()
-                prs.slide_width = slide_w
-                prs.slide_height = slide_h
-                slide_layout = prs.slide_layouts[1]
-                for i, text in enumerate(pages_text):
-                    slide = prs.slides.add_slide(slide_layout)
-                    slide.shapes.title.text = f'Page {i+1}'
-                    tf = slide.placeholders[1].text_frame
-                    tf.word_wrap = True
-                    tf.text = text[:800] if text.strip() else '(no text detected)'
-                prs.save(output_path)
-            else:
-                save_as_pptx_images(images, output_path, uid)
-
-        elif fmt == 'html':
-            output_filename = f'{base_name}_converted.html'
-            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
-            save_as_html_images(images, output_path, uid)
-
-        else:
-            return jsonify({'error': 'Unsupported format'}), 400
-
-        return send_file(output_path, as_attachment=True, download_name=output_filename)
-
-    except Exception as e:
-        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
-    finally:
-        if os.path.exists(input_path):
-            os.remove(input_path)
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .card { background: white; border-radius: 20px; padding: 44px; max-width: 600px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.10); }
+  h1 { font-size: 28px; font-weight: 800; color: #111; margin-bottom: 6px; }
+  .subtitle { color: #777; font-size: 15px; margin-bottom: 36px; }
+
+  /* Drop zone */
+  .drop-zone { border: 2px dashed #d1d5db; border-radius: 14px; padding: 44px 20px; text-align: center; cursor: pointer; transition: all 0.2s; background: #fafafa; margin-bottom: 20px; }
+  .drop-zone:hover, .drop-zone.drag-over { border-color: #6366f1; background: #f5f3ff; }
+  .drop-zone input { display: none; }
+  .drop-icon { font-size: 44px; margin-bottom: 14px; display: block; }
+  .drop-text { font-size: 16px; font-weight: 600; color: #333; }
+  .drop-hint { font-size: 13px; color: #aaa; margin-top: 5px; }
+
+  /* File selected */
+  .file-selected { display: none; flex-direction: column; gap: 10px; background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px; }
+  .file-row { display: flex; align-items: center; gap: 10px; }
+  .fname { font-size: 14px; color: #166534; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fsize { font-size: 12px; color: #166534; opacity: 0.7; }
+  .remove { background: none; border: none; cursor: pointer; color: #aaa; font-size: 20px; }
+
+  /* Upload progress bar */
+  .upload-progress { display: none; flex-direction: column; gap: 6px; }
+  .progress-label { font-size: 12px; color: #166534; font-weight: 500; }
+  .progress-track { background: #dcfce7; border-radius: 99px; height: 6px; overflow: hidden; }
+  .progress-fill { height: 100%; background: #22c55e; border-radius: 99px; width: 0%; transition: width 0.1s; }
+
+  /* Detection banner */
+  .detect-banner { display: none; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px; font-size: 14px; font-weight: 500; }
+  .detect-banner.text-pdf { background: #eff6ff; border: 1.5px solid #bfdbfe; color: #1e40af; }
+  .detect-banner.scanned-pdf { background: #fff7ed; border: 1.5px solid #fed7aa; color: #9a3412; }
+  .detect-banner.mixed-pdf { background: #f5f3ff; border: 1.5px solid #ddd6fe; color: #5b21b6; }
+  .detect-banner .banner-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+  .detect-banner .banner-sub { font-size: 13px; opacity: 0.85; }
+
+  /* Mode selector */
+  .mode-selector { display: none; background: #fafafa; border: 1.5px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 20px; }
+  .mode-selector p { font-size: 13px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
+  .mode-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .mode-opt { border: 1.5px solid #e5e7eb; border-radius: 10px; padding: 14px 12px; cursor: pointer; transition: all 0.15s; background: white; text-align: left; position: relative; }
+  .mode-opt:hover { border-color: #6366f1; }
+  .mode-opt.active { border-color: #6366f1; background: #eef2ff; }
+  .mode-opt .mode-title { font-size: 14px; font-weight: 700; color: #333; display: block; margin-bottom: 4px; }
+  .mode-opt.active .mode-title { color: #4f46e5; }
+  .mode-opt .mode-desc { font-size: 12px; color: #888; display: block; line-height: 1.4; }
+  .recommended-badge { position: absolute; top: -10px; right: 10px; background: #4f46e5; color: white; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 99px; }
+
+  /* Formats */
+  .section-label { font-size: 12px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 12px; }
+  .formats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 32px; }
+  .fmt { border: 1.5px solid #e5e7eb; border-radius: 12px; padding: 14px 6px; text-align: center; cursor: pointer; transition: all 0.15s; background: #fafafa; }
+  .fmt:hover { border-color: #6366f1; background: #f5f3ff; }
+  .fmt.active { border-color: #6366f1; background: #eef2ff; }
+  .fmt .icon { font-size: 22px; display: block; margin-bottom: 6px; }
+  .fmt .ext { font-size: 13px; font-weight: 700; color: #333; display: block; }
+  .fmt .desc { font-size: 10px; color: #999; margin-top: 3px; display: block; }
+  .fmt.active .ext { color: #4f46e5; }
+
+  /* Button */
+  .btn { width: 100%; padding: 15px; background: #4f46e5; color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer; transition: background 0.2s; }
+  .btn:hover:not(:disabled) { background: #4338ca; }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* Convert progress */
+  .convert-progress { display: none; margin-top: 18px; flex-direction: column; gap: 8px; }
+  .convert-progress-label { font-size: 13px; color: #4f46e5; font-weight: 500; }
+  .convert-track { background: #eef2ff; border-radius: 99px; height: 8px; overflow: hidden; }
+  .convert-fill { height: 100%; background: linear-gradient(90deg, #6366f1, #4f46e5); border-radius: 99px; width: 0%; transition: width 0.3s; }
+
+  /* Status */
+  .status { display: none; margin-top: 18px; padding: 14px 18px; border-radius: 12px; font-size: 14px; font-weight: 500; }
+  .status.error { background: #fef2f2; color: #991b1b; border: 1.5px solid #fecaca; }
+  .status.success { background: #f0fdf4; color: #166534; border: 1.5px solid #86efac; }
+
+  /* ── Mobile responsive ── */
+  @media (max-width: 480px) {
+    body { padding: 12px; align-items: flex-start; }
+    .card { padding: 24px 18px; border-radius: 16px; }
+    h1 { font-size: 22px; }
+    .subtitle { font-size: 13px; margin-bottom: 24px; }
+    .drop-zone { padding: 32px 16px; }
+    .drop-icon { font-size: 36px; }
+    .drop-text { font-size: 14px; }
+    .formats { grid-template-columns: repeat(3, 1fr); }
+    .fmt { padding: 12px 4px; }
+    .fmt .icon { font-size: 20px; }
+    .fmt .ext { font-size: 12px; }
+    .mode-options { grid-template-columns: 1fr; }
+    .btn { padding: 14px; font-size: 15px; }
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>PDF Converter</h1>
+  <p class="subtitle">Convert your PDF to Word, PowerPoint, HTML, or images instantly</p>
+
+  <div class="drop-zone" id="dropZone">
+    <input type="file" id="fileInput" accept=".pdf">
+    <span class="drop-icon">📄</span>
+    <div class="drop-text">Drop your PDF here or click to browse</div>
+    <div class="drop-hint">PDF files only • Max 20MB</div>
+  </div>
+
+  <div class="file-selected" id="fileSelected">
+    <div class="file-row">
+      <span>✅</span>
+      <span class="fname" id="fileName"></span>
+      <span class="fsize" id="fileSize"></span>
+      <button class="remove" id="removeFile">✕</button>
+    </div>
+    <div class="upload-progress" id="uploadProgress">
+      <div class="progress-label" id="uploadLabel">Uploading... 0%</div>
+      <div class="progress-track"><div class="progress-fill" id="uploadFill"></div></div>
+    </div>
+  </div>
+
+  <div class="detect-banner" id="detectBanner"></div>
+
+  <div class="page-selector" id="pageSelector" style="display:none; background:#fafafa; border:1.5px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:20px;">
+    <p style="font-size:13px; font-weight:700; color:#555; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">Select pages to convert</p>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;">
+      <div class="page-opt active" data-page="all" style="border:1.5px solid #6366f1; border-radius:10px; padding:14px 12px; cursor:pointer; background:#eef2ff; text-align:left;">
+        <span style="font-size:14px; font-weight:700; color:#4f46e5; display:block; margin-bottom:4px;">🗂️ All pages</span>
+        <span id="allPagesDesc" style="font-size:12px; color:#888; display:block;">Download as ZIP file</span>
+      </div>
+      <div class="page-opt" data-page="specific" style="border:1.5px solid #e5e7eb; border-radius:10px; padding:14px 12px; cursor:pointer; background:white; text-align:left;">
+        <span style="font-size:14px; font-weight:700; color:#333; display:block; margin-bottom:4px;">📄 Specific pages</span>
+        <span style="font-size:12px; color:#888; display:block;">Choose which pages</span>
+      </div>
+    </div>
+    <div id="pageInputArea" style="display:none;">
+      <label style="font-size:13px; color:#555; font-weight:500; display:block; margin-bottom:6px;">Enter page numbers (e.g. 1, 3, 5 or 1-5)</label>
+      <input type="text" id="pageInput" placeholder="e.g. 1-3, 5, 7" style="width:100%; padding:10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:14px; outline:none;">
+      <p id="pageInputHint" style="font-size:12px; color:#888; margin-top:6px;"></p>
+      <p id="pageInputError" style="font-size:12px; color:#dc2626; margin-top:4px; display:none;"></p>
+    </div>
+  </div>
+
+  <div class="mode-selector" id="modeSelector">
+    <p>Choose conversion mode</p>
+    <div class="mode-options" id="modeOptions"></div>
+  </div>
+
+  <p class="section-label">Convert to</p>
+  <div class="formats" id="formats">
+    <div class="fmt" data-fmt="docx"><span class="icon">📝</span><span class="ext">DOCX</span><span class="desc">Word</span></div>
+    <div class="fmt" data-fmt="pptx"><span class="icon">📊</span><span class="ext">PPTX</span><span class="desc">PowerPoint</span></div>
+    <div class="fmt" data-fmt="html"><span class="icon">🌐</span><span class="ext">HTML</span><span class="desc">Webpage</span></div>
+    <div class="fmt" data-fmt="jpg"><span class="icon">🖼️</span><span class="ext">JPG</span><span class="desc">Image</span></div>
+    <div class="fmt" data-fmt="png"><span class="icon">🎨</span><span class="ext">PNG</span><span class="desc">Image</span></div>
+  </div>
+
+  <button class="btn" id="convertBtn" disabled>Convert file</button>
+
+  <div class="convert-progress" id="convertProgress">
+    <div class="convert-progress-label" id="convertLabel">Converting... please wait</div>
+    <div class="convert-track"><div class="convert-fill" id="convertFill"></div></div>
+  </div>
+
+  <div class="status" id="status"></div>
+</div>
+
+<script>
+  let selectedFile = null, selectedFmt = null, selectedMode = 'image', pdfType = null, pageCount = 1;
+
+  const dropZone = document.getElementById('dropZone');
+  const fileInput = document.getElementById('fileInput');
+  const fileSelected = document.getElementById('fileSelected');
+  const fileName = document.getElementById('fileName');
+  const fileSize = document.getElementById('fileSize');
+  const convertBtn = document.getElementById('convertBtn');
+  const status = document.getElementById('status');
+  const detectBanner = document.getElementById('detectBanner');
+  const modeSelector = document.getElementById('modeSelector');
+  const modeOptions = document.getElementById('modeOptions');
+  const uploadProgress = document.getElementById('uploadProgress');
+  const uploadFill = document.getElementById('uploadFill');
+  const uploadLabel = document.getElementById('uploadLabel');
+  const convertProgress = document.getElementById('convertProgress');
+  const convertFill = document.getElementById('convertFill');
+  const convertLabel = document.getElementById('convertLabel');
+
+  function formatBytes(b) {
+    if (b < 1024) return b + ' B';
+    if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+    return (b/1024/1024).toFixed(2) + ' MB';
+  }
+
+  function countSelectedPages(raw) {
+    let count = 0;
+    const parts = raw.split(',');
+    for (let part of parts) {
+      part = part.trim();
+      if (/^\d+$/.test(part)) {
+        count += 1;
+      } else if (/^\d+-\d+$/.test(part)) {
+        const [start, end] = part.split('-').map(Number);
+        if (end >= start) count += (end - start + 1);
+      }
+    }
+    return count;
+  }
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); setFile(e.dataTransfer.files[0]); });
+  fileInput.addEventListener('change', e => setFile(e.target.files[0]));
+
+  document.getElementById('removeFile').addEventListener('click', () => {
+    selectedFile = null; pdfType = null;
+    fileInput.value = '';
+    fileSelected.style.display = 'none';
+    dropZone.style.display = 'block';
+    detectBanner.style.display = 'none';
+    modeSelector.style.display = 'none';
+    selectedMode = 'image';
+    status.style.display = 'none';
+    updateBtn();
+  });
+
+  async function setFile(f) {
+    if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
+    if (f.size > 20 * 1024 * 1024) { showStatus('error', '⚠️ File too large. Max size is 20MB.'); return; }
+    selectedFile = f;
+    fileName.textContent = f.name;
+    fileSize.textContent = formatBytes(f.size);
+    fileSelected.style.display = 'flex';
+    dropZone.style.display = 'none';
+    status.style.display = 'none';
+    detectBanner.style.display = 'none';
+    modeSelector.style.display = 'none';
+    selectedMode = 'image';
+
+    uploadProgress.style.display = 'flex';
+    uploadFill.style.width = '0%';
+    uploadLabel.textContent = 'Analyzing... 0%';
+
+    const fd = new FormData();
+    fd.append('file', f);
+
+    const xhr = new XMLHttpRequest();
+    xhr.upload.addEventListener('progress', e => {
+      if (e.lengthComputable) {
+        const pct = Math.round(e.loaded / e.total * 100);
+        uploadFill.style.width = pct + '%';
+        uploadLabel.textContent = `Uploading... ${pct}%`;
+      }
+    });
+
+    xhr.onload = function() {
+      uploadFill.style.width = '100%';
+      uploadLabel.textContent = 'Upload complete ✓';
+      setTimeout(() => { uploadProgress.style.display = 'none'; }, 800);
+
+      try {
+        const data = JSON.parse(xhr.responseText);
+        pdfType = data.type;
+        pageCount = data.page_count || 1;
+        showDetectionBanner(pdfType);
+        checkModeSelector();
+        checkPageSelector();
+      } catch(e) {}
+      updateBtn();
+    };
+
+    xhr.onerror = function() {
+      uploadProgress.style.display = 'none';
+      updateBtn();
+    };
+
+    xhr.open('POST', '/detect');
+    xhr.send(fd);
+  }
+
+  function showDetectionBanner(type) {
+    detectBanner.style.display = 'block';
+    if (type === 'text') {
+      detectBanner.className = 'detect-banner text-pdf';
+      detectBanner.innerHTML = '<div class="banner-title">📝 Text-based PDF</div><div class="banner-sub">This PDF has a real text layer — no images detected. Text extraction will be accurate.</div>';
+    } else if (type === 'scanned') {
+      detectBanner.className = 'detect-banner scanned-pdf';
+      detectBanner.innerHTML = '<div class="banner-title">🖼️ Scanned / Image-only PDF</div><div class="banner-sub">No text layer detected. This PDF is made of images only — OCR will be needed to extract text.</div>';
+    } else {
+      detectBanner.className = 'detect-banner mixed-pdf';
+      detectBanner.innerHTML = '<div class="banner-title">📝🖼️ Mixed PDF — Text & Images</div><div class="banner-sub">This PDF contains both text and images. Image-based conversion will preserve the full layout.</div>';
+    }
+  }
+
+  function checkModeSelector() {
+    if (selectedFmt === 'docx' || selectedFmt === 'pptx') {
+      modeSelector.style.display = 'block';
+      renderModeOptions();
+    } else {
+      modeSelector.style.display = 'none';
+    }
+  }
+
+  function renderModeOptions() {
+    let imageRecommended = pdfType === 'scanned' || pdfType === 'mixed';
+    let ocrRecommended = pdfType === 'text';
+
+    modeOptions.innerHTML = `
+      <div class="mode-opt ${selectedMode === 'image' ? 'active' : ''}" data-mode="image">
+        ${imageRecommended ? '<span class="recommended-badge">Recommended</span>' : ''}
+        <span class="mode-title">🖼️ Image-based</span>
+        <span class="mode-desc">Looks identical to original. Not editable but perfect layout.</span>
+      </div>
+      <div class="mode-opt ${selectedMode === 'ocr' ? 'active' : ''}" data-mode="ocr">
+        ${ocrRecommended ? '<span class="recommended-badge">Recommended</span>' : ''}
+        <span class="mode-title">🔍 OCR (editable)</span>
+        <span class="mode-desc">Extracts text so you can edit it. Layout may not be perfect.</span>
+      </div>
+    `;
+
+    selectedMode = imageRecommended ? 'image' : 'ocr';
+
+    document.querySelectorAll('.mode-opt').forEach(el => {
+      el.addEventListener('click', () => {
+        document.querySelectorAll('.mode-opt').forEach(e => e.classList.remove('active'));
+        el.classList.add('active');
+        selectedMode = el.dataset.mode;
+      });
+    });
+  }
+
+  document.querySelectorAll('.fmt').forEach(el => {
+    el.addEventListener('click', () => {
+      document.querySelectorAll('.fmt').forEach(e => e.classList.remove('active'));
+      el.classList.add('active');
+      selectedFmt = el.dataset.fmt;
+      checkModeSelector();
+      checkPageSelector();
+      updateBtn();
+    });
+  });
+
+  function updateBtn() {
+    convertBtn.disabled = !(selectedFile && selectedFmt);
+    convertBtn.textContent = selectedFile && selectedFmt ? `Convert to ${selectedFmt.toUpperCase()}` : 'Convert file';
+  }
+
+  function checkPageSelector() {
+    const pageSelector = document.getElementById('pageSelector');
+    // Only show page selector for image formats AND multi-page PDFs
+    if ((selectedFmt === 'jpg' || selectedFmt === 'png') && pageCount > 1) {
+      pageSelector.style.display = 'block';
+      document.getElementById('allPagesDesc').textContent = `${pageCount} pages as ZIP file`;
+      document.getElementById('pageInputHint').textContent = `This PDF has ${pageCount} pages`;
+    } else {
+      pageSelector.style.display = 'none';
+      // Reset to 'all' when hidden so state is clean
+      selectedPages = 'all';
+      document.getElementById('pageInputArea').style.display = 'none';
+    }
+  }
+
+  let selectedPages = 'all';
+  document.querySelectorAll('.page-opt').forEach(el => {
+    el.addEventListener('click', () => {
+      document.querySelectorAll('.page-opt').forEach(e => {
+        e.style.borderColor = '#e5e7eb';
+        e.style.background = 'white';
+        e.querySelector('span').style.color = '#333';
+      });
+      el.style.borderColor = '#6366f1';
+      el.style.background = '#eef2ff';
+      el.querySelector('span').style.color = '#4f46e5';
+      selectedPages = el.dataset.page;
+      document.getElementById('pageInputArea').style.display = selectedPages === 'specific' ? 'block' : 'none';
+    });
+  });
+
+  // ── Page input validation ──────────────────────────────────────────────────
+  function validatePageInput() {
+    const raw = document.getElementById('pageInput').value.trim();
+    const errorEl = document.getElementById('pageInputError');
+    const input = document.getElementById('pageInput');
+
+    if (!raw) {
+      errorEl.style.display = 'none';
+      input.style.borderColor = '#e5e7eb';
+      return true;
+    }
+
+    const parts = raw.split(',');
+    for (let part of parts) {
+      part = part.trim();
+
+      if (/^\d+$/.test(part)) {
+        const n = parseInt(part);
+        if (n <= 0) {
+          errorEl.textContent = '❌ Page numbers must be 1 or greater.';
+          errorEl.style.display = 'block';
+          input.style.borderColor = '#dc2626';
+          return false;
+        }
+        if (n > pageCount) {
+          errorEl.textContent = `❌ Page ${n} doesn't exist. This PDF only has ${pageCount} pages.`;
+          errorEl.style.display = 'block';
+          input.style.borderColor = '#dc2626';
+          return false;
+        }
+      } else if (/^\d+-\d+$/.test(part)) {
+        const [start, end] = part.split('-').map(Number);
+        if (start <= 0 || end <= 0) {
+          errorEl.textContent = '❌ Page numbers must be 1 or greater.';
+          errorEl.style.display = 'block';
+          input.style.borderColor = '#dc2626';
+          return false;
+        }
+        if (start > end) {
+          errorEl.textContent = `❌ Invalid range "${part}" — start must be less than or equal to end.`;
+          errorEl.style.display = 'block';
+          input.style.borderColor = '#dc2626';
+          return false;
+        }
+        if (end > pageCount) {
+          errorEl.textContent = `❌ Page ${end} doesn't exist. This PDF only has ${pageCount} pages.`;
+          errorEl.style.display = 'block';
+          input.style.borderColor = '#dc2626';
+          return false;
+        }
+      } else {
+        errorEl.textContent = `❌ Invalid format "${part}". Use numbers, commas, and ranges like 1-3.`;
+        errorEl.style.display = 'block';
+        input.style.borderColor = '#dc2626';
+        return false;
+      }
+    }
+
+    errorEl.style.display = 'none';
+    input.style.borderColor = '#22c55e';
+    return true;
+  }
+
+  document.getElementById('pageInput').addEventListener('input', validatePageInput);
+  // ──────────────────────────────────────────────────────────────────────────
+
+  function showStatus(type, msg) {
+    status.className = 'status ' + type;
+    status.style.display = 'block';
+    status.textContent = msg;
+  }
+
+  let convertTimer = null;
+  function startConvertProgress() {
+    convertProgress.style.display = 'flex';
+    convertFill.style.width = '0%';
+    convertLabel.textContent = 'Converting... please wait ⏳';
+    let pct = 0;
+    convertTimer = setInterval(() => {
+      if (pct < 85) {
+        pct += Math.random() * 8;
+        convertFill.style.width = Math.min(pct, 85) + '%';
+      }
+    }, 400);
+  }
+
+  function finishConvertProgress(success) {
+    clearInterval(convertTimer);
+    convertFill.style.width = '100%';
+    convertLabel.textContent = success ? 'Done! ✅' : 'Failed ❌';
+    setTimeout(() => { convertProgress.style.display = 'none'; }, 1000);
+  }
+
+  convertBtn.addEventListener('click', async () => {
+    if (!selectedFile || !selectedFmt) return;
+
+    // Validate page input before converting
+    if ((selectedFmt === 'jpg' || selectedFmt === 'png') && selectedPages === 'specific') {
+      const pageVal = document.getElementById('pageInput').value.trim();
+      if (!pageVal) {
+        showStatus('error', '❌ Please enter page numbers.');
+        return;
+      }
+      if (!validatePageInput()) {
+        showStatus('error', '❌ Please fix the page input errors before converting.');
+        return;
+      }
+    }
+
+    convertBtn.disabled = true;
+    status.style.display = 'none';
+    startConvertProgress();
+
+    const fd = new FormData();
+    fd.append('file', selectedFile);
+    fd.append('format', selectedFmt);
+    fd.append('mode', selectedMode);
+
+    // Send selected pages to backend
+    if ((selectedFmt === 'jpg' || selectedFmt === 'png') && selectedPages === 'specific') {
+      fd.append('pages', document.getElementById('pageInput').value.trim());
+    }
+
+    try {
+      const res = await fetch('/convert', { method: 'POST', body: fd });
+      if (!res.ok) {
+        const d = await res.json();
+        finishConvertProgress(false);
+        showStatus('error', '❌ ' + (d.error || 'Conversion failed.'));
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+
+      // Determine correct file extension
+      let downloadName;
+      if (selectedFmt === 'jpg' || selectedFmt === 'png') {
+        let numPages;
+        if (selectedPages === 'all') {
+          numPages = pageCount;
+        } else {
+          numPages = countSelectedPages(document.getElementById('pageInput').value.trim());
+        }
+        downloadName = selectedFile.name.replace('.pdf', numPages > 1 ? '.zip' : '.' + selectedFmt);
+      } else {
+        downloadName = selectedFile.name.replace('.pdf', '.' + selectedFmt);
+      }
+      a.download = downloadName;
+
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      finishConvertProgress(true);
+      showStatus('success', '✅ Done! Your file has been downloaded.');
+    } catch(e) {
+      finishConvertProgress(false);
+      showStatus('error', '❌ Something went wrong. Please try again.');
+    } finally {
+      convertBtn.disabled = false;
+      updateBtn();
+    }
+  });
+</script>
+</body>
+</html>
