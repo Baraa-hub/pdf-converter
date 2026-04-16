@@ -7,6 +7,10 @@ RUN apt-get update && apt-get install -y \
     libmupdf-dev \
     mupdf \
     mupdf-tools \
+    libreoffice \
+    libreoffice-writer \
+    libreoffice-calc \
+    libreoffice-impress \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY requirements.txt .
