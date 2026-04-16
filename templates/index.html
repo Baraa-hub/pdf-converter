@@ -425,28 +425,36 @@ async function loadXlsxPreview(file) {
   }
 }
 
-// ── PPTX Preview — render slide thumbnails using server-side image conversion
-// We convert the first page to an image via our own /convert-to-pdf then render
-// Actually: for PPTX we show a simple slide list using pptxjs CDN approach
+// ── PPTX Preview — server-side: LibreOffice renders first slide as image ──
 async function loadPptxPreview(file) {
-  // Use JSZip + custom slide extraction for basic preview
   try {
-    // Simple approach: show file info since pptxjs needs specific setup
+    const fd = new FormData();
+    fd.append('file', file);
+    const res = await fetch('/preview-pptx', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error('Server render failed');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const img = document.getElementById('imgPreview');
+    img.onload = () => {
+      previewLoading.style.display = 'none';
+      img.style.display = 'block';
+      URL.revokeObjectURL(url);
+    };
+    img.src = url;
+  } catch(e) {
+    // Fallback to file info card
     const container = document.getElementById('pptxPreview');
     container.innerHTML = `
       <div style="padding:20px; text-align:center; color:#555;">
         <div style="font-size:40px; margin-bottom:12px;">📽️</div>
         <div style="font-weight:700; font-size:15px; margin-bottom:6px;">${file.name}</div>
-        <div style="font-size:13px; color:#888;">PowerPoint Preview</div>
-        <div style="font-size:12px; color:#aaa; margin-top:8px;">${formatBytes(file.size)}</div>
+        <div style="font-size:13px; color:#888;">PowerPoint • ${formatBytes(file.size)}</div>
         <div style="margin-top:16px; padding:12px; background:#f5f3ff; border-radius:8px; font-size:12px; color:#5b21b6;">
-          Full preview available after converting to PDF
+          Preview will be available after converting to PDF
         </div>
       </div>`;
     previewLoading.style.display = 'none';
     container.style.display = 'block';
-  } catch(e) {
-    previewLoading.textContent = 'PPTX preview unavailable';
   }
 }
 
@@ -467,6 +475,7 @@ async function showPreview(file, type) {
   } else if (type === 'xlsx') {
     await loadXlsxPreview(file);
   } else if (type === 'pptx') {
+    // Server renders first slide as image — reuses imgPreview element
     await loadPptxPreview(file);
   }
 }
