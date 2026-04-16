@@ -3,15 +3,12 @@
 <head><link rel="icon" href="/static/favicon.ico">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PDF Converter</title>
+<title>PDF Converter – ieatpdf.com</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; transition: all 0.4s; }
 
-  /* Layout wrapper */
-  .layout { display: flex; gap: 24px; width: 100%; max-width: 1200px; align-items: flex-start; justify-content: center; transition: all 0.4s; }
-
-  /* PDF Preview panel */
+  .layout { display: flex; gap: 24px; width: 100%; max-width: 1200px; align-items: flex-start; justify-content: center; }
   .preview-panel { display: none; width: 420px; min-width: 320px; flex-shrink: 0; background: #1e1e1e; border-radius: 20px; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.25); position: sticky; top: 20px; }
   .preview-panel.visible { display: flex; flex-direction: column; }
   .preview-header { background: #2a2a2a; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; }
@@ -25,9 +22,17 @@
   .preview-canvas-wrap canvas { display: block; border-radius: 4px; box-shadow: 0 2px 12px rgba(0,0,0,0.4); max-width: 100%; }
   .preview-loading { color: #666; font-size: 13px; padding: 40px; text-align: center; }
 
-  /* Controls card */
   .card { background: white; border-radius: 20px; padding: 44px; max-width: 600px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.10); flex-shrink: 0; }
-  h1 { font-size: 28px; font-weight: 800; color: #111; margin-bottom: 6px; }
+
+  /* ── Mode Toggle ── */
+  .mode-toggle-wrap { display: flex; align-items: center; justify-content: center; margin-bottom: 28px; }
+  .mode-toggle { display: flex; background: #f0f2f5; border-radius: 12px; padding: 4px; gap: 4px; }
+  .mode-toggle-btn { padding: 9px 20px; border: none; border-radius: 9px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: transparent; color: #888; }
+  .mode-toggle-btn.active { background: white; color: #4f46e5; box-shadow: 0 2px 8px rgba(0,0,0,0.10); }
+
+  .logo-row { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+  .logo-row img { width: 48px; height: 48px; }
+  h1 { font-size: 28px; font-weight: 800; color: #111; }
   .subtitle { color: #777; font-size: 15px; margin-bottom: 36px; }
 
   .drop-zone { border: 2px dashed #d1d5db; border-radius: 14px; padding: 44px 20px; text-align: center; cursor: pointer; transition: all 0.2s; background: #fafafa; margin-bottom: 20px; }
@@ -37,11 +42,11 @@
   .drop-text { font-size: 16px; font-weight: 600; color: #333; }
   .drop-hint { font-size: 13px; color: #aaa; margin-top: 5px; }
 
-  .file-selected { display: none; flex-direction: column; gap: 10px; background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px; }
+  .file-selected { display: none; flex-direction: column; gap: 8px; background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px; }
   .file-row { display: flex; align-items: center; gap: 10px; }
   .fname { font-size: 14px; color: #166534; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .fsize { font-size: 12px; color: #166534; opacity: 0.7; }
-  .remove { background: none; border: none; cursor: pointer; color: #aaa; font-size: 20px; }
+  .remove-file { background: none; border: none; cursor: pointer; color: #aaa; font-size: 18px; flex-shrink: 0; }
 
   .upload-progress { display: none; flex-direction: column; gap: 6px; }
   .progress-label { font-size: 12px; color: #166534; font-weight: 500; }
@@ -76,6 +81,16 @@
   .fmt .desc { font-size: 10px; color: #999; margin-top: 3px; display: block; }
   .fmt.active .ext { color: #4f46e5; }
 
+  /* ── To-PDF formats ── */
+  .to-pdf-formats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 32px; }
+
+  /* Multi-file list */
+  .files-list { display: none; flex-direction: column; gap: 6px; margin-bottom: 20px; }
+  .file-item { display: flex; align-items: center; gap: 10px; background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 10px; padding: 10px 14px; }
+  .file-item .fname { font-size: 13px; color: #166534; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-item .fsize { font-size: 11px; color: #166534; opacity: 0.7; flex-shrink: 0; }
+  .file-item .remove-file { color: #aaa; font-size: 16px; }
+
   .btn { width: 100%; padding: 15px; background: #4f46e5; color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer; transition: background 0.2s; }
   .btn:hover:not(:disabled) { background: #4338ca; }
   .btn:disabled { opacity: 0.45; cursor: not-allowed; }
@@ -89,7 +104,6 @@
   .status.error { background: #fef2f2; color: #991b1b; border: 1.5px solid #fecaca; }
   .status.success { background: #f0fdf4; color: #166534; border: 1.5px solid #86efac; }
 
-  /* Mobile: stack vertically */
   @media (max-width: 900px) {
     .layout { flex-direction: column; align-items: center; }
     .preview-panel { width: 100%; max-width: 600px; position: static; order: -1; }
@@ -104,6 +118,7 @@
     .drop-icon { font-size: 36px; }
     .drop-text { font-size: 14px; }
     .formats { grid-template-columns: repeat(3, 1fr); }
+    .to-pdf-formats { grid-template-columns: repeat(2, 1fr); }
     .fmt { padding: 12px 4px; }
     .fmt .icon { font-size: 20px; }
     .fmt .ext { font-size: 12px; }
@@ -115,7 +130,7 @@
 <body>
 <div class="layout" id="layout">
 
-  <!-- PDF Preview Panel (shown automatically when PDF is loaded) -->
+  <!-- PDF Preview Panel -->
   <div class="preview-panel" id="previewPanel">
     <div class="preview-header">
       <div class="preview-header-title" id="previewTitle">Preview</div>
@@ -133,73 +148,124 @@
 
   <!-- Controls Card -->
   <div class="card">
-    <h1><img src="/static/logo.png" alt="ieatpdf" style="width:48px; height:48px; vertical-align:middle; margin-right:12px; border-radius:10px;">PDF Converter</h1>
-    <p class="subtitle">Convert your PDF to Word, Excel, PowerPoint, HTML, or images instantly</p>
 
-    <div class="drop-zone" id="dropZone">
-      <input type="file" id="fileInput" accept=".pdf">
-      <span class="drop-icon">📄</span>
-      <div class="drop-text">Drop your PDF here or click to browse</div>
-      <div class="drop-hint">PDF files only • Max 20MB</div>
-    </div>
-
-    <div class="file-selected" id="fileSelected">
-      <div class="file-row">
-        <span>✅</span>
-        <span class="fname" id="fileName"></span>
-        <span class="fsize" id="fileSize"></span>
-        <button class="remove" id="removeFile">✕</button>
-      </div>
-      <div class="upload-progress" id="uploadProgress">
-        <div class="progress-label" id="uploadLabel">Uploading... 0%</div>
-        <div class="progress-track"><div class="progress-fill" id="uploadFill"></div></div>
+    <!-- Mode Toggle -->
+    <div class="mode-toggle-wrap">
+      <div class="mode-toggle">
+        <button class="mode-toggle-btn active" id="toPdfFromPdf" onclick="setAppMode('from-pdf')">📄 PDF → Convert</button>
+        <button class="mode-toggle-btn" id="toPdfMode" onclick="setAppMode('to-pdf')">Convert → PDF 📄</button>
       </div>
     </div>
 
-    <div class="detect-banner" id="detectBanner"></div>
+    <!-- Header -->
+    <div class="logo-row">
+      <img src="/static/logo.png" alt="ieatpdf">
+      <h1>PDF Converter</h1>
+    </div>
+    <p class="subtitle" id="subtitleText">Convert your PDF to Word, Excel, PowerPoint, HTML, or images instantly</p>
 
-    <div class="page-selector" id="pageSelector" style="display:none; background:#fafafa; border:1.5px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:20px;">
-      <p style="font-size:13px; font-weight:700; color:#555; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">Select pages to convert</p>
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;">
-        <div class="page-opt active" data-page="all" style="border:1.5px solid #6366f1; border-radius:10px; padding:14px 12px; cursor:pointer; background:#eef2ff; text-align:left;">
-          <span style="font-size:14px; font-weight:700; color:#4f46e5; display:block; margin-bottom:4px;">🗂️ All pages</span>
-          <span id="allPagesDesc" style="font-size:12px; color:#888; display:block;">All pages</span>
+    <!-- ══════════════════════════════════════════ -->
+    <!--  MODE A: PDF → X                          -->
+    <!-- ══════════════════════════════════════════ -->
+    <div id="fromPdfSection">
+      <div class="drop-zone" id="dropZone">
+        <input type="file" id="fileInput" accept=".pdf">
+        <span class="drop-icon">📄</span>
+        <div class="drop-text">Drop your PDF here or click to browse</div>
+        <div class="drop-hint">PDF files only • Max 20MB</div>
+      </div>
+
+      <div class="file-selected" id="fileSelected">
+        <div class="file-row">
+          <span>✅</span>
+          <span class="fname" id="fileName"></span>
+          <span class="fsize" id="fileSize"></span>
+          <button class="remove-file" id="removeFile">✕</button>
         </div>
-        <div class="page-opt" data-page="specific" style="border:1.5px solid #e5e7eb; border-radius:10px; padding:14px 12px; cursor:pointer; background:white; text-align:left;">
-          <span style="font-size:14px; font-weight:700; color:#333; display:block; margin-bottom:4px;">📄 Specific pages</span>
-          <span style="font-size:12px; color:#888; display:block;">Choose which pages</span>
+        <div class="upload-progress" id="uploadProgress">
+          <div class="progress-label" id="uploadLabel">Uploading... 0%</div>
+          <div class="progress-track"><div class="progress-fill" id="uploadFill"></div></div>
         </div>
       </div>
-      <div id="pageInputArea" style="display:none;">
-        <label style="font-size:13px; color:#555; font-weight:500; display:block; margin-bottom:6px;">Enter page numbers (e.g. 1, 3, 5 or 1-5)</label>
-        <input type="text" id="pageInput" placeholder="e.g. 1-3, 5, 7" style="width:100%; padding:10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:14px; outline:none;">
-        <p id="pageInputHint" style="font-size:12px; color:#888; margin-top:6px;"></p>
-        <p id="pageInputError" style="font-size:12px; color:#dc2626; margin-top:4px; display:none;"></p>
+
+      <div class="detect-banner" id="detectBanner"></div>
+
+      <div class="page-selector" id="pageSelector" style="display:none; background:#fafafa; border:1.5px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:20px;">
+        <p style="font-size:13px; font-weight:700; color:#555; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">Select pages to convert</p>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;">
+          <div class="page-opt active" data-page="all" style="border:1.5px solid #6366f1; border-radius:10px; padding:14px 12px; cursor:pointer; background:#eef2ff; text-align:left;">
+            <span style="font-size:14px; font-weight:700; color:#4f46e5; display:block; margin-bottom:4px;">🗂️ All pages</span>
+            <span id="allPagesDesc" style="font-size:12px; color:#888; display:block;">All pages</span>
+          </div>
+          <div class="page-opt" data-page="specific" style="border:1.5px solid #e5e7eb; border-radius:10px; padding:14px 12px; cursor:pointer; background:white; text-align:left;">
+            <span style="font-size:14px; font-weight:700; color:#333; display:block; margin-bottom:4px;">📄 Specific pages</span>
+            <span style="font-size:12px; color:#888; display:block;">Choose which pages</span>
+          </div>
+        </div>
+        <div id="pageInputArea" style="display:none;">
+          <label style="font-size:13px; color:#555; font-weight:500; display:block; margin-bottom:6px;">Enter page numbers (e.g. 1, 3, 5 or 1-5)</label>
+          <input type="text" id="pageInput" placeholder="e.g. 1-3, 5, 7" style="width:100%; padding:10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:14px; outline:none;">
+          <p id="pageInputHint" style="font-size:12px; color:#888; margin-top:6px;"></p>
+          <p id="pageInputError" style="font-size:12px; color:#dc2626; margin-top:4px; display:none;"></p>
+        </div>
       </div>
+
+      <div class="mode-selector" id="modeSelector">
+        <p>Choose conversion mode</p>
+        <div class="mode-options" id="modeOptions"></div>
+      </div>
+
+      <p class="section-label">Convert to</p>
+      <div class="formats" id="formats">
+        <div class="fmt" data-fmt="docx"><span class="icon">📝</span><span class="ext">DOCX</span><span class="desc">Word</span></div>
+        <div class="fmt" data-fmt="xlsx"><span class="icon">📊</span><span class="ext">XLSX</span><span class="desc">Excel</span></div>
+        <div class="fmt" data-fmt="pptx"><span class="icon">📽️</span><span class="ext">PPTX</span><span class="desc">PowerPoint</span></div>
+        <div class="fmt" data-fmt="html"><span class="icon">🌐</span><span class="ext">HTML</span><span class="desc">Webpage</span></div>
+        <div class="fmt" data-fmt="jpg"><span class="icon">🖼️</span><span class="ext">JPG</span><span class="desc">Image</span></div>
+        <div class="fmt" data-fmt="png"><span class="icon">🎨</span><span class="ext">PNG</span><span class="desc">Image</span></div>
+      </div>
+
+      <button class="btn" id="convertBtn" disabled>Convert file</button>
     </div>
 
-    <div class="mode-selector" id="modeSelector">
-      <p>Choose conversion mode</p>
-      <div class="mode-options" id="modeOptions"></div>
+    <!-- ══════════════════════════════════════════ -->
+    <!--  MODE B: X → PDF                          -->
+    <!-- ══════════════════════════════════════════ -->
+    <div id="toPdfSection" style="display:none;">
+
+      <p class="section-label">Select file type to convert</p>
+      <div class="to-pdf-formats" id="toPdfFormats">
+        <div class="fmt active" data-topdf="image" onclick="selectToPdfFmt(this, 'image')">
+          <span class="icon">🖼️</span><span class="ext">Image</span><span class="desc">JPG / PNG</span>
+        </div>
+        <div class="fmt" data-topdf="docx" onclick="selectToPdfFmt(this, 'docx')">
+          <span class="icon">📝</span><span class="ext">DOCX</span><span class="desc">Word</span>
+        </div>
+        <div class="fmt" data-topdf="xlsx" onclick="selectToPdfFmt(this, 'xlsx')">
+          <span class="icon">📊</span><span class="ext">XLSX</span><span class="desc">Excel</span>
+        </div>
+        <div class="fmt" data-topdf="pptx" onclick="selectToPdfFmt(this, 'pptx')">
+          <span class="icon">📽️</span><span class="ext">PPTX</span><span class="desc">PowerPoint</span>
+        </div>
+      </div>
+
+      <div class="drop-zone" id="toPdfDropZone">
+        <input type="file" id="toPdfFileInput" accept="image/*" multiple>
+        <span class="drop-icon">🖼️</span>
+        <div class="drop-text" id="toPdfDropText">Drop images here or click to browse</div>
+        <div class="drop-hint" id="toPdfDropHint">JPG, PNG supported • Multiple files allowed</div>
+      </div>
+
+      <div class="files-list" id="filesList"></div>
+
+      <button class="btn" id="toPdfBtn" disabled>Convert to PDF</button>
     </div>
 
-    <p class="section-label">Convert to</p>
-    <div class="formats" id="formats">
-      <div class="fmt" data-fmt="docx"><span class="icon">📝</span><span class="ext">DOCX</span><span class="desc">Word</span></div>
-      <div class="fmt" data-fmt="xlsx"><span class="icon">📊</span><span class="ext">XLSX</span><span class="desc">Excel</span></div>
-      <div class="fmt" data-fmt="pptx"><span class="icon">📽️</span><span class="ext">PPTX</span><span class="desc">PowerPoint</span></div>
-      <div class="fmt" data-fmt="html"><span class="icon">🌐</span><span class="ext">HTML</span><span class="desc">Webpage</span></div>
-      <div class="fmt" data-fmt="jpg"><span class="icon">🖼️</span><span class="ext">JPG</span><span class="desc">Image</span></div>
-      <div class="fmt" data-fmt="png"><span class="icon">🎨</span><span class="ext">PNG</span><span class="desc">Image</span></div>
-    </div>
-
-    <button class="btn" id="convertBtn" disabled>Convert file</button>
-
+    <!-- Shared progress + status -->
     <div class="convert-progress" id="convertProgress">
       <div class="convert-progress-label" id="convertLabel">Converting... please wait</div>
       <div class="convert-track"><div class="convert-fill" id="convertFill"></div></div>
     </div>
-
     <div class="status" id="status"></div>
 
     <!-- Privacy Notice -->
@@ -219,375 +285,439 @@
         <a href="mailto:admin@ieatpdf.com" style="font-size:12px; color:#aaa; text-decoration:none;">Contact</a>
       </div>
     </div>
-  </div>
 
-</div>
+  </div><!-- end .card -->
+</div><!-- end .layout -->
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-  let selectedFile = null, selectedFmt = null, selectedMode = 'image', pdfType = null, pageCount = 1;
-  let pdfDoc = null, currentPage = 1, pdfFileUrl = null;
+// ── State ──────────────────────────────────────────────────────────────────
+let appMode = 'from-pdf'; // 'from-pdf' or 'to-pdf'
+let selectedFile = null, selectedFmt = null, selectedMode = 'image', pdfType = null, pageCount = 1;
+let pdfDoc = null, currentPage = 1, pdfFileUrl = null;
+let toPdfFmt = 'image', toPdfFiles = [];
 
-  const dropZone = document.getElementById('dropZone');
-  const fileInput = document.getElementById('fileInput');
-  const fileSelected = document.getElementById('fileSelected');
-  const fileName = document.getElementById('fileName');
-  const fileSize = document.getElementById('fileSize');
-  const convertBtn = document.getElementById('convertBtn');
-  const status = document.getElementById('status');
-  const detectBanner = document.getElementById('detectBanner');
-  const modeSelector = document.getElementById('modeSelector');
-  const modeOptions = document.getElementById('modeOptions');
+// ── App mode toggle ────────────────────────────────────────────────────────
+function setAppMode(mode) {
+  appMode = mode;
+  document.getElementById('fromPdfSection').style.display = mode === 'from-pdf' ? 'block' : 'none';
+  document.getElementById('toPdfSection').style.display = mode === 'to-pdf' ? 'block' : 'none';
+  document.getElementById('toPdfFromPdf').classList.toggle('active', mode === 'from-pdf');
+  document.getElementById('toPdfMode').classList.toggle('active', mode === 'to-pdf');
+  document.getElementById('subtitleText').textContent = mode === 'from-pdf'
+    ? 'Convert your PDF to Word, Excel, PowerPoint, HTML, or images instantly'
+    : 'Convert your images, Word, Excel, or PowerPoint files to PDF instantly';
+  // Hide preview panel when switching to to-pdf mode
+  if (mode === 'to-pdf') {
+    document.getElementById('previewPanel').classList.remove('visible');
+  }
+  status.style.display = 'none';
+  document.getElementById('convertProgress').style.display = 'none';
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function formatBytes(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+  return (b/1024/1024).toFixed(2) + ' MB';
+}
+
+function countSelectedPages(raw) {
+  let count = 0;
+  raw.split(',').forEach(part => {
+    part = part.trim();
+    if (/^\d+$/.test(part)) count++;
+    else if (/^\d+-\d+$/.test(part)) {
+      const [s, e] = part.split('-').map(Number);
+      if (e >= s) count += e - s + 1;
+    }
+  });
+  return count;
+}
+
+const status = document.getElementById('status');
+function showStatus(type, msg) {
+  status.className = 'status ' + type;
+  status.style.display = 'block';
+  status.textContent = msg;
+}
+
+let convertTimer = null;
+function startConvertProgress() {
+  const cp = document.getElementById('convertProgress');
+  const cf = document.getElementById('convertFill');
+  const cl = document.getElementById('convertLabel');
+  cp.style.display = 'flex';
+  cf.style.width = '0%';
+  cl.textContent = 'Converting... please wait ⏳';
+  let pct = 0;
+  convertTimer = setInterval(() => {
+    if (pct < 85) { pct += Math.random() * 8; cf.style.width = Math.min(pct, 85) + '%'; }
+  }, 400);
+}
+function finishConvertProgress(success) {
+  clearInterval(convertTimer);
+  const cf = document.getElementById('convertFill');
+  const cl = document.getElementById('convertLabel');
+  cf.style.width = '100%';
+  cl.textContent = success ? 'Done! ✅' : 'Failed ❌';
+  setTimeout(() => { document.getElementById('convertProgress').style.display = 'none'; }, 1000);
+}
+
+// ── PDF Preview ────────────────────────────────────────────────────────────
+const previewPanel = document.getElementById('previewPanel');
+const previewTitle = document.getElementById('previewTitle');
+const pdfCanvas = document.getElementById('pdfCanvas');
+const previewLoading = document.getElementById('previewLoading');
+const prevPageBtn = document.getElementById('prevPage');
+const nextPageBtn = document.getElementById('nextPage');
+const pageInfoEl = document.getElementById('pageInfo');
+
+async function loadPDFPreview() {
+  try {
+    pdfDoc = await pdfjsLib.getDocument(pdfFileUrl).promise;
+    currentPage = 1;
+    prevPageBtn.disabled = true;
+    nextPageBtn.disabled = pdfDoc.numPages <= 1;
+    await renderPreviewPage(1);
+  } catch(e) {
+    previewLoading.textContent = 'Preview unavailable';
+  }
+}
+async function renderPreviewPage(num) {
+  previewLoading.style.display = 'block';
+  pdfCanvas.style.display = 'none';
+  const page = await pdfDoc.getPage(num);
+  const canvasWrap = document.getElementById('canvasWrap');
+  const maxW = canvasWrap.clientWidth - 24;
+  const vp = page.getViewport({ scale: 1 });
+  const scale = Math.min(maxW / vp.width, 2);
+  const scaledVp = page.getViewport({ scale });
+  pdfCanvas.width = scaledVp.width;
+  pdfCanvas.height = scaledVp.height;
+  await page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport: scaledVp }).promise;
+  previewLoading.style.display = 'none';
+  pdfCanvas.style.display = 'block';
+  pageInfoEl.textContent = `${num} / ${pdfDoc.numPages}`;
+  prevPageBtn.disabled = num <= 1;
+  nextPageBtn.disabled = num >= pdfDoc.numPages;
+}
+prevPageBtn.addEventListener('click', async () => { if (currentPage > 1) { currentPage--; await renderPreviewPage(currentPage); } });
+nextPageBtn.addEventListener('click', async () => { if (pdfDoc && currentPage < pdfDoc.numPages) { currentPage++; await renderPreviewPage(currentPage); } });
+document.addEventListener('keydown', e => {
+  if (!previewPanel.classList.contains('visible')) return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') nextPageBtn.click();
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') prevPageBtn.click();
+});
+
+// ── FROM-PDF mode ──────────────────────────────────────────────────────────
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const fileSelected = document.getElementById('fileSelected');
+const convertBtn = document.getElementById('convertBtn');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); setFile(e.dataTransfer.files[0]); });
+fileInput.addEventListener('change', e => setFile(e.target.files[0]));
+
+document.getElementById('removeFile').addEventListener('click', () => {
+  selectedFile = null; pdfType = null; pdfDoc = null;
+  if (pdfFileUrl) { URL.revokeObjectURL(pdfFileUrl); pdfFileUrl = null; }
+  fileInput.value = '';
+  fileSelected.style.display = 'none';
+  dropZone.style.display = 'block';
+  document.getElementById('detectBanner').style.display = 'none';
+  document.getElementById('modeSelector').style.display = 'none';
+  previewPanel.classList.remove('visible');
+  selectedMode = 'image';
+  status.style.display = 'none';
+  updateBtn();
+});
+
+async function setFile(f) {
+  if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
+  if (f.size > 20 * 1024 * 1024) { showStatus('error', '⚠️ File too large. Max size is 20MB.'); return; }
+  selectedFile = f;
+  if (pdfFileUrl) URL.revokeObjectURL(pdfFileUrl);
+  pdfFileUrl = URL.createObjectURL(f);
+  document.getElementById('fileName').textContent = f.name;
+  document.getElementById('fileSize').textContent = formatBytes(f.size);
+  fileSelected.style.display = 'flex';
+  dropZone.style.display = 'none';
+  status.style.display = 'none';
+  document.getElementById('detectBanner').style.display = 'none';
+  document.getElementById('modeSelector').style.display = 'none';
+  selectedMode = 'image';
+  previewTitle.textContent = f.name;
+  previewLoading.style.display = 'block';
+  pdfCanvas.style.display = 'none';
+  previewPanel.classList.add('visible');
+  loadPDFPreview();
+
   const uploadProgress = document.getElementById('uploadProgress');
   const uploadFill = document.getElementById('uploadFill');
   const uploadLabel = document.getElementById('uploadLabel');
-  const convertProgress = document.getElementById('convertProgress');
-  const convertFill = document.getElementById('convertFill');
-  const convertLabel = document.getElementById('convertLabel');
-  const previewPanel = document.getElementById('previewPanel');
-  const previewTitle = document.getElementById('previewTitle');
-  const pdfCanvas = document.getElementById('pdfCanvas');
-  const previewLoading = document.getElementById('previewLoading');
-  const prevPageBtn = document.getElementById('prevPage');
-  const nextPageBtn = document.getElementById('nextPage');
-  const pageInfoEl = document.getElementById('pageInfo');
+  uploadProgress.style.display = 'flex';
+  uploadFill.style.width = '0%';
+  uploadLabel.textContent = 'Analyzing... 0%';
 
-  function formatBytes(b) {
-    if (b < 1024) return b + ' B';
-    if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
-    return (b/1024/1024).toFixed(2) + ' MB';
-  }
-
-  function countSelectedPages(raw) {
-    let count = 0;
-    raw.split(',').forEach(part => {
-      part = part.trim();
-      if (/^\d+$/.test(part)) count++;
-      else if (/^\d+-\d+$/.test(part)) {
-        const [s, e] = part.split('-').map(Number);
-        if (e >= s) count += e - s + 1;
-      }
-    });
-    return count;
-  }
-
-  dropZone.addEventListener('click', () => fileInput.click());
-  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-  dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); setFile(e.dataTransfer.files[0]); });
-  fileInput.addEventListener('change', e => setFile(e.target.files[0]));
-
-  document.getElementById('removeFile').addEventListener('click', () => {
-    selectedFile = null; pdfType = null; pdfDoc = null;
-    if (pdfFileUrl) { URL.revokeObjectURL(pdfFileUrl); pdfFileUrl = null; }
-    fileInput.value = '';
-    fileSelected.style.display = 'none';
-    dropZone.style.display = 'block';
-    detectBanner.style.display = 'none';
-    modeSelector.style.display = 'none';
-    previewPanel.classList.remove('visible');
-    selectedMode = 'image';
-    status.style.display = 'none';
+  const fd = new FormData();
+  fd.append('file', f);
+  const xhr = new XMLHttpRequest();
+  xhr.upload.addEventListener('progress', e => {
+    if (e.lengthComputable) {
+      const pct = Math.round(e.loaded / e.total * 100);
+      uploadFill.style.width = pct + '%';
+      uploadLabel.textContent = `Uploading... ${pct}%`;
+    }
+  });
+  xhr.onload = function() {
+    uploadFill.style.width = '100%';
+    uploadLabel.textContent = 'Upload complete ✓';
+    setTimeout(() => { uploadProgress.style.display = 'none'; }, 800);
+    try {
+      const data = JSON.parse(xhr.responseText);
+      pdfType = data.type; pageCount = data.page_count || 1;
+      showDetectionBanner(pdfType); checkModeSelector(); checkPageSelector();
+    } catch(e) {}
     updateBtn();
-  });
+  };
+  xhr.onerror = function() { uploadProgress.style.display = 'none'; updateBtn(); };
+  xhr.open('POST', '/detect');
+  xhr.send(fd);
+}
 
-  async function setFile(f) {
-    if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
-    if (f.size > 20 * 1024 * 1024) { showStatus('error', '⚠️ File too large. Max size is 20MB.'); return; }
-    selectedFile = f;
-    if (pdfFileUrl) URL.revokeObjectURL(pdfFileUrl);
-    pdfFileUrl = URL.createObjectURL(f);
-
-    fileName.textContent = f.name;
-    fileSize.textContent = formatBytes(f.size);
-    fileSelected.style.display = 'flex';
-    dropZone.style.display = 'none';
-    status.style.display = 'none';
-    detectBanner.style.display = 'none';
-    modeSelector.style.display = 'none';
-    selectedMode = 'image';
-
-    // Show preview panel immediately with loading state
-    previewTitle.textContent = f.name;
-    previewLoading.style.display = 'block';
-    pdfCanvas.style.display = 'none';
-    previewPanel.classList.add('visible');
-
-    // Load PDF preview in background (don't wait for server)
-    loadPDFPreview();
-
-    uploadProgress.style.display = 'flex';
-    uploadFill.style.width = '0%';
-    uploadLabel.textContent = 'Analyzing... 0%';
-
-    const fd = new FormData();
-    fd.append('file', f);
-    const xhr = new XMLHttpRequest();
-    xhr.upload.addEventListener('progress', e => {
-      if (e.lengthComputable) {
-        const pct = Math.round(e.loaded / e.total * 100);
-        uploadFill.style.width = pct + '%';
-        uploadLabel.textContent = `Uploading... ${pct}%`;
-      }
-    });
-    xhr.onload = function() {
-      uploadFill.style.width = '100%';
-      uploadLabel.textContent = 'Upload complete ✓';
-      setTimeout(() => { uploadProgress.style.display = 'none'; }, 800);
-      try {
-        const data = JSON.parse(xhr.responseText);
-        pdfType = data.type;
-        pageCount = data.page_count || 1;
-        showDetectionBanner(pdfType);
-        checkModeSelector();
-        checkPageSelector();
-      } catch(e) {}
-      updateBtn();
-    };
-    xhr.onerror = function() { uploadProgress.style.display = 'none'; updateBtn(); };
-    xhr.open('POST', '/detect');
-    xhr.send(fd);
+function showDetectionBanner(type) {
+  const b = document.getElementById('detectBanner');
+  b.style.display = 'block';
+  if (type === 'text') {
+    b.className = 'detect-banner text-pdf';
+    b.innerHTML = '<div class="banner-title">📝 Text-based PDF</div><div class="banner-sub">This PDF has a real text layer — text extraction will be accurate.</div>';
+  } else if (type === 'scanned') {
+    b.className = 'detect-banner scanned-pdf';
+    b.innerHTML = '<div class="banner-title">🖼️ Scanned / Image-only PDF</div><div class="banner-sub">No text layer detected — OCR will be needed to extract text.</div>';
+  } else {
+    b.className = 'detect-banner mixed-pdf';
+    b.innerHTML = '<div class="banner-title">📝🖼️ Mixed PDF — Text & Images</div><div class="banner-sub">Contains both text and images. Image-based conversion will preserve full layout.</div>';
   }
+}
 
-  async function loadPDFPreview() {
-    try {
-      pdfDoc = await pdfjsLib.getDocument(pdfFileUrl).promise;
-      currentPage = 1;
-      prevPageBtn.disabled = true;
-      nextPageBtn.disabled = pdfDoc.numPages <= 1;
-      pageInfoEl.textContent = `1 / ${pdfDoc.numPages}`;
-      await renderPreviewPage(1);
-    } catch(e) {
-      previewLoading.textContent = 'Preview unavailable';
-    }
-  }
+function checkModeSelector() {
+  const ms = document.getElementById('modeSelector');
+  if (selectedFmt === 'docx' || selectedFmt === 'pptx') { ms.style.display = 'block'; renderModeOptions(); }
+  else ms.style.display = 'none';
+}
 
-  async function renderPreviewPage(num) {
-    previewLoading.style.display = 'block';
-    pdfCanvas.style.display = 'none';
-    const page = await pdfDoc.getPage(num);
-    const canvasWrap = document.getElementById('canvasWrap');
-    const maxW = canvasWrap.clientWidth - 24;
-    const vp = page.getViewport({ scale: 1 });
-    const scale = Math.min(maxW / vp.width, 2);
-    const scaledVp = page.getViewport({ scale });
-    pdfCanvas.width = scaledVp.width;
-    pdfCanvas.height = scaledVp.height;
-    await page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport: scaledVp }).promise;
-    previewLoading.style.display = 'none';
-    pdfCanvas.style.display = 'block';
-    pageInfoEl.textContent = `${num} / ${pdfDoc.numPages}`;
-    prevPageBtn.disabled = num <= 1;
-    nextPageBtn.disabled = num >= pdfDoc.numPages;
-  }
-
-  prevPageBtn.addEventListener('click', async () => {
-    if (currentPage > 1) { currentPage--; await renderPreviewPage(currentPage); }
-  });
-  nextPageBtn.addEventListener('click', async () => {
-    if (pdfDoc && currentPage < pdfDoc.numPages) { currentPage++; await renderPreviewPage(currentPage); }
-  });
-
-  // Keyboard navigation for preview
-  document.addEventListener('keydown', e => {
-    if (!previewPanel.classList.contains('visible')) return;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') nextPageBtn.click();
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') prevPageBtn.click();
-  });
-
-  function showDetectionBanner(type) {
-    detectBanner.style.display = 'block';
-    if (type === 'text') {
-      detectBanner.className = 'detect-banner text-pdf';
-      detectBanner.innerHTML = '<div class="banner-title">📝 Text-based PDF</div><div class="banner-sub">This PDF has a real text layer — no images detected. Text extraction will be accurate.</div>';
-    } else if (type === 'scanned') {
-      detectBanner.className = 'detect-banner scanned-pdf';
-      detectBanner.innerHTML = '<div class="banner-title">🖼️ Scanned / Image-only PDF</div><div class="banner-sub">No text layer detected. This PDF is made of images only — OCR will be needed to extract text.</div>';
-    } else {
-      detectBanner.className = 'detect-banner mixed-pdf';
-      detectBanner.innerHTML = '<div class="banner-title">📝🖼️ Mixed PDF — Text & Images</div><div class="banner-sub">This PDF contains both text and images. Image-based conversion will preserve the full layout.</div>';
-    }
-  }
-
-  function checkModeSelector() {
-    if (selectedFmt === 'docx' || selectedFmt === 'pptx') {
-      modeSelector.style.display = 'block';
-      renderModeOptions();
-    } else {
-      modeSelector.style.display = 'none';
-    }
-  }
-
-  function renderModeOptions() {
-    let imageRecommended = pdfType === 'scanned' || pdfType === 'mixed';
-    let ocrRecommended = pdfType === 'text';
-    modeOptions.innerHTML = `
-      <div class="mode-opt ${selectedMode === 'image' ? 'active' : ''}" data-mode="image">
-        ${imageRecommended ? '<span class="recommended-badge">Recommended</span>' : ''}
-        <span class="mode-title">🖼️ Image-based</span>
-        <span class="mode-desc">Looks identical to original. Not editable but perfect layout.</span>
-      </div>
-      <div class="mode-opt ${selectedMode === 'ocr' ? 'active' : ''}" data-mode="ocr">
-        ${ocrRecommended ? '<span class="recommended-badge">Recommended</span>' : ''}
-        <span class="mode-title">🔍 OCR (editable)</span>
-        <span class="mode-desc">Extracts text so you can edit it. Layout may not be perfect.</span>
-        <span style="font-size:10px; color:#dc2626; display:block; margin-top:6px;">⚠️ Colors, images & layout will not be preserved.</span>
-      </div>
-    `;
-    selectedMode = imageRecommended ? 'image' : 'ocr';
-    document.querySelectorAll('.mode-opt').forEach(el => {
-      el.addEventListener('click', () => {
-        document.querySelectorAll('.mode-opt').forEach(e => e.classList.remove('active'));
-        el.classList.add('active');
-        selectedMode = el.dataset.mode;
-      });
-    });
-  }
-
-  document.querySelectorAll('.fmt').forEach(el => {
+function renderModeOptions() {
+  const mo = document.getElementById('modeOptions');
+  let imgRec = pdfType === 'scanned' || pdfType === 'mixed';
+  let ocrRec = pdfType === 'text';
+  mo.innerHTML = `
+    <div class="mode-opt ${selectedMode === 'image' ? 'active' : ''}" data-mode="image">
+      ${imgRec ? '<span class="recommended-badge">Recommended</span>' : ''}
+      <span class="mode-title">🖼️ Image-based</span>
+      <span class="mode-desc">Looks identical to original. Not editable but perfect layout.</span>
+    </div>
+    <div class="mode-opt ${selectedMode === 'ocr' ? 'active' : ''}" data-mode="ocr">
+      ${ocrRec ? '<span class="recommended-badge">Recommended</span>' : ''}
+      <span class="mode-title">🔍 OCR (editable)</span>
+      <span class="mode-desc">Extracts text so you can edit it. Layout may not be perfect.</span>
+      <span style="font-size:10px;color:#dc2626;display:block;margin-top:6px;">⚠️ Colors, images & layout will not be preserved.</span>
+    </div>`;
+  selectedMode = imgRec ? 'image' : 'ocr';
+  document.querySelectorAll('.mode-opt').forEach(el => {
     el.addEventListener('click', () => {
-      document.querySelectorAll('.fmt').forEach(e => e.classList.remove('active'));
-      el.classList.add('active');
-      selectedFmt = el.dataset.fmt;
-      checkModeSelector();
-      checkPageSelector();
-      updateBtn();
+      document.querySelectorAll('.mode-opt').forEach(e => e.classList.remove('active'));
+      el.classList.add('active'); selectedMode = el.dataset.mode;
     });
   });
+}
 
-  function updateBtn() {
-    convertBtn.disabled = !(selectedFile && selectedFmt);
-    convertBtn.textContent = selectedFile && selectedFmt ? `Convert to ${selectedFmt.toUpperCase()}` : 'Convert file';
-  }
-
-  function checkPageSelector() {
-    const pageSelector = document.getElementById('pageSelector');
-    if (selectedFmt && pageCount > 1) {
-      pageSelector.style.display = 'block';
-      const isImg = selectedFmt === 'jpg' || selectedFmt === 'png';
-      document.getElementById('allPagesDesc').textContent = isImg ? `${pageCount} pages as ZIP file` : `All ${pageCount} pages`;
-      document.getElementById('pageInputHint').textContent = `This PDF has ${pageCount} pages`;
-    } else {
-      pageSelector.style.display = 'none';
-      selectedPages = 'all';
-      document.getElementById('pageInputArea').style.display = 'none';
-    }
-  }
-
-  let selectedPages = 'all';
-  document.querySelectorAll('.page-opt').forEach(el => {
-    el.addEventListener('click', () => {
-      document.querySelectorAll('.page-opt').forEach(e => {
-        e.style.borderColor = '#e5e7eb'; e.style.background = 'white';
-        e.querySelector('span').style.color = '#333';
-      });
-      el.style.borderColor = '#6366f1'; el.style.background = '#eef2ff';
-      el.querySelector('span').style.color = '#4f46e5';
-      selectedPages = el.dataset.page;
-      document.getElementById('pageInputArea').style.display = selectedPages === 'specific' ? 'block' : 'none';
-    });
+document.querySelectorAll('#formats .fmt').forEach(el => {
+  el.addEventListener('click', () => {
+    document.querySelectorAll('#formats .fmt').forEach(e => e.classList.remove('active'));
+    el.classList.add('active'); selectedFmt = el.dataset.fmt;
+    checkModeSelector(); checkPageSelector(); updateBtn();
   });
+});
 
-  function validatePageInput() {
-    const raw = document.getElementById('pageInput').value.trim();
-    const errorEl = document.getElementById('pageInputError');
-    const input = document.getElementById('pageInput');
-    if (!raw) { errorEl.style.display = 'none'; input.style.borderColor = '#e5e7eb'; return true; }
-    for (let part of raw.split(',')) {
-      part = part.trim();
-      if (/^\d+$/.test(part)) {
-        const n = parseInt(part);
-        if (n <= 0) { errorEl.textContent = '❌ Page numbers must be 1 or greater.'; errorEl.style.display = 'block'; input.style.borderColor = '#dc2626'; return false; }
-        if (n > pageCount) { errorEl.textContent = `❌ Page ${n} doesn't exist. This PDF only has ${pageCount} pages.`; errorEl.style.display = 'block'; input.style.borderColor = '#dc2626'; return false; }
-      } else if (/^\d+-\d+$/.test(part)) {
-        const [s, e] = part.split('-').map(Number);
-        if (s <= 0 || e <= 0) { errorEl.textContent = '❌ Page numbers must be 1 or greater.'; errorEl.style.display = 'block'; input.style.borderColor = '#dc2626'; return false; }
-        if (s > e) { errorEl.textContent = `❌ Invalid range "${part}".`; errorEl.style.display = 'block'; input.style.borderColor = '#dc2626'; return false; }
-        if (e > pageCount) { errorEl.textContent = `❌ Page ${e} doesn't exist. This PDF only has ${pageCount} pages.`; errorEl.style.display = 'block'; input.style.borderColor = '#dc2626'; return false; }
-      } else { errorEl.textContent = `❌ Invalid format "${part}". Use numbers, commas, and ranges like 1-3.`; errorEl.style.display = 'block'; input.style.borderColor = '#dc2626'; return false; }
-    }
-    errorEl.style.display = 'none'; input.style.borderColor = '#22c55e'; return true;
+function updateBtn() {
+  convertBtn.disabled = !(selectedFile && selectedFmt);
+  convertBtn.textContent = selectedFile && selectedFmt ? `Convert to ${selectedFmt.toUpperCase()}` : 'Convert file';
+}
+
+function checkPageSelector() {
+  const ps = document.getElementById('pageSelector');
+  if (selectedFmt && pageCount > 1) {
+    ps.style.display = 'block';
+    const isImg = selectedFmt === 'jpg' || selectedFmt === 'png';
+    document.getElementById('allPagesDesc').textContent = isImg ? `${pageCount} pages as ZIP file` : `All ${pageCount} pages`;
+    document.getElementById('pageInputHint').textContent = `This PDF has ${pageCount} pages`;
+  } else {
+    ps.style.display = 'none'; selectedPages = 'all';
+    document.getElementById('pageInputArea').style.display = 'none';
   }
+}
 
-  document.getElementById('pageInput').addEventListener('input', validatePageInput);
-
-  function showStatus(type, msg) {
-    status.className = 'status ' + type;
-    status.style.display = 'block';
-    status.textContent = msg;
-  }
-
-  let convertTimer = null;
-  function startConvertProgress() {
-    convertProgress.style.display = 'flex';
-    convertFill.style.width = '0%';
-    convertLabel.textContent = 'Converting... please wait ⏳';
-    let pct = 0;
-    convertTimer = setInterval(() => {
-      if (pct < 85) { pct += Math.random() * 8; convertFill.style.width = Math.min(pct, 85) + '%'; }
-    }, 400);
-  }
-
-  function finishConvertProgress(success) {
-    clearInterval(convertTimer);
-    convertFill.style.width = '100%';
-    convertLabel.textContent = success ? 'Done! ✅' : 'Failed ❌';
-    setTimeout(() => { convertProgress.style.display = 'none'; }, 1000);
-  }
-
-  convertBtn.addEventListener('click', async () => {
-    if (!selectedFile || !selectedFmt) return;
-    if (selectedPages === 'specific') {
-      const pageVal = document.getElementById('pageInput').value.trim();
-      if (!pageVal) { showStatus('error', '❌ Please enter page numbers.'); return; }
-      if (!validatePageInput()) { showStatus('error', '❌ Please fix the page input errors before converting.'); return; }
-    }
-
-    convertBtn.disabled = true;
-    status.style.display = 'none';
-    startConvertProgress();
-
-    const fd = new FormData();
-    fd.append('file', selectedFile);
-    fd.append('format', selectedFmt);
-    fd.append('mode', selectedMode);
-    if (selectedPages === 'specific') fd.append('pages', document.getElementById('pageInput').value.trim());
-
-    try {
-      const res = await fetch('/convert', { method: 'POST', body: fd });
-      if (!res.ok) {
-        const d = await res.json();
-        finishConvertProgress(false);
-        showStatus('error', '❌ ' + (d.error || 'Conversion failed.'));
-        return;
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      let downloadName;
-      if (selectedFmt === 'jpg' || selectedFmt === 'png') {
-        const n = selectedPages === 'all' ? pageCount : countSelectedPages(document.getElementById('pageInput').value.trim());
-        downloadName = selectedFile.name.replace('.pdf', n > 1 ? '.zip' : '.' + selectedFmt);
-      } else {
-        downloadName = selectedFile.name.replace('.pdf', '.' + selectedFmt);
-      }
-      a.download = downloadName;
-      document.body.appendChild(a); a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      finishConvertProgress(true);
-      showStatus('success', '✅ Done! Your file has been downloaded.');
-    } catch(e) {
-      finishConvertProgress(false);
-      showStatus('error', '❌ Something went wrong. Please try again.');
-    } finally {
-      convertBtn.disabled = false;
-      updateBtn();
-    }
+let selectedPages = 'all';
+document.querySelectorAll('.page-opt').forEach(el => {
+  el.addEventListener('click', () => {
+    document.querySelectorAll('.page-opt').forEach(e => { e.style.borderColor='#e5e7eb'; e.style.background='white'; e.querySelector('span').style.color='#333'; });
+    el.style.borderColor='#6366f1'; el.style.background='#eef2ff'; el.querySelector('span').style.color='#4f46e5';
+    selectedPages = el.dataset.page;
+    document.getElementById('pageInputArea').style.display = selectedPages === 'specific' ? 'block' : 'none';
   });
+});
+
+function validatePageInput() {
+  const raw = document.getElementById('pageInput').value.trim();
+  const errorEl = document.getElementById('pageInputError');
+  const input = document.getElementById('pageInput');
+  if (!raw) { errorEl.style.display='none'; input.style.borderColor='#e5e7eb'; return true; }
+  for (let part of raw.split(',')) {
+    part = part.trim();
+    if (/^\d+$/.test(part)) {
+      const n = parseInt(part);
+      if (n<=0) { errorEl.textContent='❌ Page numbers must be 1 or greater.'; errorEl.style.display='block'; input.style.borderColor='#dc2626'; return false; }
+      if (n>pageCount) { errorEl.textContent=`❌ Page ${n} doesn't exist. This PDF only has ${pageCount} pages.`; errorEl.style.display='block'; input.style.borderColor='#dc2626'; return false; }
+    } else if (/^\d+-\d+$/.test(part)) {
+      const [s,e] = part.split('-').map(Number);
+      if (s<=0||e<=0) { errorEl.textContent='❌ Page numbers must be 1 or greater.'; errorEl.style.display='block'; input.style.borderColor='#dc2626'; return false; }
+      if (s>e) { errorEl.textContent=`❌ Invalid range "${part}".`; errorEl.style.display='block'; input.style.borderColor='#dc2626'; return false; }
+      if (e>pageCount) { errorEl.textContent=`❌ Page ${e} doesn't exist. This PDF only has ${pageCount} pages.`; errorEl.style.display='block'; input.style.borderColor='#dc2626'; return false; }
+    } else { errorEl.textContent=`❌ Invalid format "${part}". Use numbers, commas, and ranges like 1-3.`; errorEl.style.display='block'; input.style.borderColor='#dc2626'; return false; }
+  }
+  errorEl.style.display='none'; input.style.borderColor='#22c55e'; return true;
+}
+document.getElementById('pageInput').addEventListener('input', validatePageInput);
+
+convertBtn.addEventListener('click', async () => {
+  if (!selectedFile || !selectedFmt) return;
+  if (selectedPages === 'specific') {
+    const pv = document.getElementById('pageInput').value.trim();
+    if (!pv) { showStatus('error', '❌ Please enter page numbers.'); return; }
+    if (!validatePageInput()) { showStatus('error', '❌ Please fix the page input errors before converting.'); return; }
+  }
+  convertBtn.disabled = true; status.style.display = 'none'; startConvertProgress();
+  const fd = new FormData();
+  fd.append('file', selectedFile); fd.append('format', selectedFmt); fd.append('mode', selectedMode);
+  if (selectedPages === 'specific') fd.append('pages', document.getElementById('pageInput').value.trim());
+  try {
+    const res = await fetch('/convert', { method: 'POST', body: fd });
+    if (!res.ok) { const d = await res.json(); finishConvertProgress(false); showStatus('error', '❌ ' + (d.error || 'Conversion failed.')); return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url;
+    let dn;
+    if (selectedFmt==='jpg'||selectedFmt==='png') {
+      const n = selectedPages==='all' ? pageCount : countSelectedPages(document.getElementById('pageInput').value.trim());
+      dn = selectedFile.name.replace('.pdf', n>1?'.zip':'.'+selectedFmt);
+    } else { dn = selectedFile.name.replace('.pdf', '.'+selectedFmt); }
+    a.download = dn;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    finishConvertProgress(true); showStatus('success', '✅ Done! Your file has been downloaded.');
+  } catch(e) { finishConvertProgress(false); showStatus('error', '❌ Something went wrong. Please try again.'); }
+  finally { convertBtn.disabled = false; updateBtn(); }
+});
+
+// ── TO-PDF mode ────────────────────────────────────────────────────────────
+const toPdfDropZone = document.getElementById('toPdfDropZone');
+const toPdfFileInput = document.getElementById('toPdfFileInput');
+const toPdfBtn = document.getElementById('toPdfBtn');
+const filesList = document.getElementById('filesList');
+
+const toPdfAccept = { image: 'image/*', docx: '.docx', xlsx: '.xlsx', pptx: '.pptx' };
+const toPdfMultiple = { image: true, docx: false, xlsx: false, pptx: false };
+const toPdfHints = {
+  image: 'JPG, PNG supported • Multiple files allowed • Combined into one PDF',
+  docx: 'Word document (.docx) • Single file',
+  xlsx: 'Excel spreadsheet (.xlsx) • Single file',
+  pptx: 'PowerPoint presentation (.pptx) • Single file',
+};
+const toPdfIcons = { image: '🖼️', docx: '📝', xlsx: '📊', pptx: '📽️' };
+const toPdfDropTexts = {
+  image: 'Drop images here or click to browse',
+  docx: 'Drop your Word file here or click to browse',
+  xlsx: 'Drop your Excel file here or click to browse',
+  pptx: 'Drop your PowerPoint file here or click to browse',
+};
+
+function selectToPdfFmt(el, fmt) {
+  document.querySelectorAll('#toPdfFormats .fmt').forEach(e => e.classList.remove('active'));
+  el.classList.add('active');
+  toPdfFmt = fmt;
+  toPdfFiles = [];
+  renderFilesList();
+  toPdfFileInput.accept = toPdfAccept[fmt];
+  toPdfFileInput.multiple = toPdfMultiple[fmt];
+  document.getElementById('toPdfDropText').textContent = toPdfDropTexts[fmt];
+  document.getElementById('toPdfDropHint').textContent = toPdfHints[fmt];
+  toPdfDropZone.querySelector('.drop-icon').textContent = toPdfIcons[fmt];
+  toPdfBtn.disabled = true;
+  status.style.display = 'none';
+}
+
+toPdfDropZone.addEventListener('click', () => toPdfFileInput.click());
+toPdfDropZone.addEventListener('dragover', e => { e.preventDefault(); toPdfDropZone.classList.add('drag-over'); });
+toPdfDropZone.addEventListener('dragleave', () => toPdfDropZone.classList.remove('drag-over'));
+toPdfDropZone.addEventListener('drop', e => { e.preventDefault(); toPdfDropZone.classList.remove('drag-over'); handleToPdfFiles(e.dataTransfer.files); });
+toPdfFileInput.addEventListener('change', e => handleToPdfFiles(e.target.files));
+
+function handleToPdfFiles(fileList) {
+  const newFiles = Array.from(fileList);
+  if (toPdfFmt === 'image') {
+    // Append images
+    toPdfFiles = [...toPdfFiles, ...newFiles];
+  } else {
+    // Single file only
+    toPdfFiles = [newFiles[0]];
+  }
+  renderFilesList();
+  toPdfBtn.disabled = toPdfFiles.length === 0;
+  toPdfFileInput.value = '';
+}
+
+function renderFilesList() {
+  filesList.innerHTML = '';
+  if (toPdfFiles.length === 0) { filesList.style.display = 'none'; return; }
+  filesList.style.display = 'flex';
+  toPdfFiles.forEach((f, i) => {
+    const item = document.createElement('div');
+    item.className = 'file-item';
+    item.innerHTML = `<span class="fname">${f.name}</span><span class="fsize">${formatBytes(f.size)}</span><button class="remove-file" onclick="removeToPdfFile(${i})">✕</button>`;
+    filesList.appendChild(item);
+  });
+}
+
+function removeToPdfFile(idx) {
+  toPdfFiles.splice(idx, 1);
+  renderFilesList();
+  toPdfBtn.disabled = toPdfFiles.length === 0;
+}
+
+toPdfBtn.addEventListener('click', async () => {
+  if (toPdfFiles.length === 0) return;
+  toPdfBtn.disabled = true; status.style.display = 'none'; startConvertProgress();
+  const fd = new FormData();
+  fd.append('format', toPdfFmt);
+  toPdfFiles.forEach(f => fd.append('files', f));
+  try {
+    const res = await fetch('/convert-to-pdf', { method: 'POST', body: fd });
+    if (!res.ok) { const d = await res.json(); finishConvertProgress(false); showStatus('error', '❌ ' + (d.error || 'Conversion failed.')); return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url;
+    const baseName = toPdfFiles[0].name.replace(/\.[^.]+$/, '');
+    a.download = baseName + '_converted.pdf';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    finishConvertProgress(true); showStatus('success', '✅ Done! Your PDF has been downloaded.');
+  } catch(e) { finishConvertProgress(false); showStatus('error', '❌ Something went wrong. Please try again.'); }
+  finally { toPdfBtn.disabled = toPdfFiles.length === 0; }
+});
 </script>
 </body>
 </html>
