@@ -696,19 +696,29 @@ def convert():
     try:
         with pdfplumber.open(input_path) as pdf:
             page_count = len(pdf.pages)
-        dpi = 150 if page_count <= 5 else 80
-        images = pdf_to_images(input_path, dpi=dpi)
+        dpi = 150 if page_count <= 5 else 100
 
         if fmt in ('jpg', 'png'):
             save_fmt = 'JPEG' if fmt == 'jpg' else 'PNG'
             ext = fmt
             pages_param = request.form.get('pages', '').strip()
             if pages_param:
-                selected_indices = parse_pages(pages_param, len(images))
+                # Parse first, then only render the specific requested pages
+                selected_indices = parse_pages(pages_param, page_count)
                 if not selected_indices:
                     return jsonify({'error': 'No valid pages selected. Use format like: 1, 3, 5-7'}), 400
-                selected_images = [images[i] for i in selected_indices]
+                selected_images = []
+                for idx in selected_indices:
+                    imgs = convert_from_path(
+                        input_path, dpi=dpi, thread_count=1,
+                        first_page=idx+1, last_page=idx+1,
+                        use_cropbox=True, strict=False
+                    )
+                    if imgs:
+                        selected_images.append(imgs[0])
             else:
+                # All pages
+                images = pdf_to_images(input_path, dpi=dpi)
                 selected_images = images
 
             if len(selected_images) == 1:
