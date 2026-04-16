@@ -732,7 +732,10 @@ def convert():
             output_path = os.path.join(OUTPUT_FOLDER, output_filename)
             if mode == 'ocr':
                 save_as_docx_text(input_path, output_path)
+            elif mode == 'image':
+                save_as_docx_images(images, output_path, uid)
             else:
+                # native mode — extract tables and text
                 save_as_docx_native(input_path, output_path, uid)
 
         elif fmt == 'pptx':
