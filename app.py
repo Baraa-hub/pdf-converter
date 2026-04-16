@@ -75,14 +75,24 @@ def save_image_file(img, path, save_fmt):
 
 def save_as_docx_images(images, output_path, uid):
     from docx import Document
-    from docx.shared import Inches
+    from docx.shared import Inches, Emu
     doc = Document()
+    # Set zero margins so full-page images don't overflow and create blank pages
+    for section in doc.sections:
+        section.top_margin = Inches(0)
+        section.bottom_margin = Inches(0)
+        section.left_margin = Inches(0)
+        section.right_margin = Inches(0)
     for i, img in enumerate(images):
         img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
         save_image_file(img, img_path, 'PNG')
         if i > 0:
             doc.add_page_break()
-        doc.add_picture(img_path, width=Inches(6.5))
+        # Fit image to page width while preserving aspect ratio
+        w_px, h_px = img.size
+        page_w = Inches(8.27)  # A4 width
+        page_h = Emu(int(page_w * h_px / w_px))
+        doc.add_picture(img_path, width=page_w, height=page_h)
     doc.save(output_path)
 
 def save_as_pptx_images(images, output_path, uid):
