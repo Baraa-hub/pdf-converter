@@ -495,7 +495,7 @@
     const fd = new FormData();
     fd.append('file', selectedFile);
     fd.append('format', selectedFmt);
-    fd.append('mode', pdfType === 'text' && selectedMode !== 'ocr' ? 'native' : selectedMode);
+    fd.append('mode', selectedMode);
 
     // Send selected pages to backend
     if ((selectedFmt === 'jpg' || selectedFmt === 'png') && selectedPages === 'specific') {
