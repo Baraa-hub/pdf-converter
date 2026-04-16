@@ -831,6 +831,106 @@ def index():
 def privacy():
     return render_template('privacy.html')
 
+def convert_office_to_pdf(input_path, output_dir):
+    """Convert DOCX/XLSX/PPTX to PDF using LibreOffice headless."""
+    import subprocess
+    result = subprocess.run([
+        'libreoffice', '--headless', '--convert-to', 'pdf',
+        '--outdir', output_dir, input_path
+    ], capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise Exception(f'LibreOffice conversion failed: {result.stderr}')
+    # LibreOffice names output as original_filename.pdf
+    base = os.path.splitext(os.path.basename(input_path))[0]
+    out = os.path.join(output_dir, base + '.pdf')
+    if not os.path.exists(out):
+        raise Exception('Output PDF not found after conversion')
+    return out
+
+def images_to_pdf(image_paths, output_path):
+    """Combine multiple images into a single PDF."""
+    images = []
+    for p in image_paths:
+        img = Image.open(p).convert('RGB')
+        images.append(img)
+    if not images:
+        raise Exception('No valid images found')
+    images[0].save(output_path, save_all=True, append_images=images[1:])
+
+@app.route('/convert-to-pdf', methods=['POST'])
+def convert_to_pdf():
+    fmt = request.form.get('format', '').lower()
+    uid = str(uuid.uuid4())[:8]
+    saved_paths = []
+
+    try:
+        files = request.files.getlist('files')
+        if not files or all(f.filename == '' for f in files):
+            return jsonify({'error': 'No files uploaded'}), 400
+
+        if fmt == 'image':
+            # Multiple images → single PDF
+            allowed = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp', '.tiff'}
+            img_paths = []
+            for i, f in enumerate(files):
+                ext = os.path.splitext(f.filename.lower())[1]
+                if ext not in allowed:
+                    return jsonify({'error': f'Unsupported image format: {ext}'}), 400
+                p = os.path.join(UPLOAD_FOLDER, f'{uid}_{i}{ext}')
+                f.save(p)
+                saved_paths.append(p)
+                img_paths.append(p)
+
+            base_name = secure_filename(files[0].filename)
+            base_name = os.path.splitext(base_name)[0].replace('.', '_')
+            output_filename = f'{base_name}_converted.pdf'
+            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+            images_to_pdf(img_paths, output_path)
+
+        elif fmt in ('docx', 'xlsx', 'pptx'):
+            # Single office file → PDF
+            if len(files) != 1:
+                return jsonify({'error': 'Please upload exactly one file'}), 400
+            f = files[0]
+            ext = os.path.splitext(f.filename.lower())[1]
+            expected = {'docx': '.docx', 'xlsx': '.xlsx', 'pptx': '.pptx'}
+            if ext != expected[fmt]:
+                return jsonify({'error': f'Expected a {expected[fmt]} file'}), 400
+
+            input_path = os.path.join(UPLOAD_FOLDER, f'{uid}{ext}')
+            f.save(input_path)
+            saved_paths.append(input_path)
+
+            base_name = secure_filename(f.filename)
+            base_name = os.path.splitext(base_name)[0].replace('.', '_')
+            output_filename = f'{base_name}_converted.pdf'
+
+            pdf_path = convert_office_to_pdf(input_path, OUTPUT_FOLDER)
+            # Rename to our output filename
+            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+            if pdf_path != output_path:
+                os.rename(pdf_path, output_path)
+
+        else:
+            return jsonify({'error': 'Unsupported format'}), 400
+
+        return send_file(output_path, as_attachment=True, download_name=output_filename)
+
+    except Exception as e:
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+    finally:
+        for p in saved_paths:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except:
+                pass
+        try:
+            if 'output_path' in locals() and os.path.exists(output_path):
+                os.remove(output_path)
+        except:
+            pass
+
 @app.route('/detect', methods=['POST'])
 def detect():
     if 'file' not in request.files:
