@@ -336,7 +336,7 @@ def debug():
 
 # ── Main native DOCX converter ─────────────────────────────────────────────────
 
-def save_as_docx_native(input_path, output_path, uid):
+def save_as_docx_native(input_path, output_path, uid, pages_param=None):
     from docx import Document
     from docx.shared import Pt, Inches
 
@@ -348,9 +348,14 @@ def save_as_docx_native(input_path, output_path, uid):
         section.right_margin = Inches(0.75)
 
     with pdfplumber.open(input_path) as pdf:
-        for page_index, page in enumerate(pdf.pages):
-            if page_index > 0:
+        total_pages = len(pdf.pages)
+        page_indices = parse_pages(pages_param, total_pages) if pages_param else list(range(total_pages))
+        first_page = True
+        for page_index in page_indices:
+            page = pdf.pages[page_index]
+            if not first_page:
                 doc.add_page_break()
+            first_page = False
 
             page_w = float(page.width)
             page_h = float(page.height)
@@ -555,16 +560,21 @@ def save_as_docx_native(input_path, output_path, uid):
     doc.save(output_path)
 
 
-def save_as_docx_text(input_path, output_path):
+def save_as_docx_text(input_path, output_path, pages_param=None):
     from docx import Document
     from docx.shared import Pt, Inches
 
     doc = Document()
 
     with pdfplumber.open(input_path) as pdf:
-        for i, page in enumerate(pdf.pages):
-            if i > 0:
+        total_pages = len(pdf.pages)
+        page_indices = parse_pages(pages_param, total_pages) if pages_param else list(range(total_pages))
+        first_page = True
+        for i in page_indices:
+            page = pdf.pages[i]
+            if not first_page:
                 doc.add_page_break()
+            first_page = False
 
             section = doc.sections[-1]
             section.page_width = Inches(float(page.width) / 72)
@@ -639,6 +649,23 @@ def save_as_docx_text(input_path, output_path):
 
     doc.save(output_path)
 
+
+def get_page_images(input_path, pages_param, page_count, dpi):
+    """Get PIL images for either all pages or specific pages."""
+    if pages_param:
+        indices = parse_pages(pages_param, page_count)
+        result = []
+        for idx in indices:
+            imgs = convert_from_path(
+                input_path, dpi=dpi, thread_count=1,
+                first_page=idx+1, last_page=idx+1,
+                use_cropbox=True, strict=False
+            )
+            if imgs:
+                result.append(imgs[0])
+        return result
+    else:
+        return pdf_to_images(input_path, dpi=dpi)
 
 def parse_pages(pages_param, total):
     indices = []
@@ -740,22 +767,25 @@ def convert():
         elif fmt == 'docx':
             output_filename = f'{base_name}_converted.docx'
             output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+            pages_param = request.form.get('pages', '').strip()
             if mode == 'ocr':
-                save_as_docx_text(input_path, output_path)
+                save_as_docx_text(input_path, output_path, pages_param or None)
             elif mode == 'image':
-                save_as_docx_images(images, output_path, uid)
+                page_images = get_page_images(input_path, pages_param, page_count, dpi)
+                save_as_docx_images(page_images, output_path, uid)
             else:
-                # native mode — extract tables and text
-                save_as_docx_native(input_path, output_path, uid)
+                save_as_docx_native(input_path, output_path, uid, pages_param or None)
 
         elif fmt == 'pptx':
             output_filename = f'{base_name}_converted.pptx'
             output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+            pages_param = request.form.get('pages', '').strip()
+            page_images = get_page_images(input_path, pages_param, page_count, dpi)
             if mode == 'ocr':
                 from pptx import Presentation
                 from pptx.util import Inches, Emu
-                pages_text = ocr_images(images)
-                first_img = images[0]
+                pages_text = ocr_images(page_images)
+                first_img = page_images[0]
                 slide_w = Inches(10)
                 slide_h = Emu(int(slide_w * first_img.size[1] / first_img.size[0]))
                 prs = Presentation()
@@ -770,12 +800,14 @@ def convert():
                     tf.text = text[:800] if text.strip() else '(no text detected)'
                 prs.save(output_path)
             else:
-                save_as_pptx_images(images, output_path, uid)
+                save_as_pptx_images(page_images, output_path, uid)
 
         elif fmt == 'html':
             output_filename = f'{base_name}_converted.html'
             output_path = os.path.join(OUTPUT_FOLDER, output_filename)
-            save_as_html_images(images, output_path, uid)
+            pages_param = request.form.get('pages', '').strip()
+            page_images = get_page_images(input_path, pages_param, page_count, dpi)
+            save_as_html_images(page_images, output_path, uid)
 
         else:
             return jsonify({'error': 'Unsupported format'}), 400
