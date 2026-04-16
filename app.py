@@ -948,38 +948,44 @@ def detect():
 
 @app.route('/preview-pptx', methods=['POST'])
 def preview_pptx():
-    """Convert first slide of PPTX to image using LibreOffice and return it."""
+    """Convert a specific slide of PPTX to image using LibreOffice."""
     import subprocess
     if 'file' not in request.files:
         return jsonify({'error': 'No file'}), 400
     f = request.files['file']
+    slide_num = int(request.form.get('slide', 1))
     uid = str(uuid.uuid4())[:8]
     input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pptx')
     f.save(input_path)
     try:
-        # Step 1: Convert PPTX to PDF using LibreOffice
-        pdf_path = os.path.join(OUTPUT_FOLDER, f'{uid}.pdf')
+        # Convert PPTX to PDF using LibreOffice
         result = subprocess.run([
             'libreoffice', '--headless', '--convert-to', 'pdf',
             '--outdir', OUTPUT_FOLDER, input_path
         ], capture_output=True, text=True, timeout=60)
-        # LibreOffice names it after the input file
         lo_pdf = os.path.join(OUTPUT_FOLDER, f'{uid}.pdf')
         if not os.path.exists(lo_pdf):
             return jsonify({'error': 'Conversion failed'}), 500
-        # Step 2: Render first page of PDF to image
-        imgs = convert_from_path(lo_pdf, dpi=150, first_page=1, last_page=1)
+        # Get total slide count
+        with pdfplumber.open(lo_pdf) as pdf:
+            total_slides = len(pdf.pages)
+        # Render requested slide as image
+        imgs = convert_from_path(lo_pdf, dpi=150,
+                                 first_page=slide_num, last_page=slide_num)
         if not imgs:
             return jsonify({'error': 'Could not render slide'}), 500
-        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_slide1.jpg')
+        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_slide.jpg')
         imgs[0].save(img_path, 'JPEG', quality=85)
-        return send_file(img_path, mimetype='image/jpeg')
+        # Return image with total slides in header
+        response = send_file(img_path, mimetype='image/jpeg')
+        response.headers['X-Total-Slides'] = str(total_slides)
+        return response
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
         for p in [input_path,
                   os.path.join(OUTPUT_FOLDER, f'{uid}.pdf'),
-                  os.path.join(OUTPUT_FOLDER, f'{uid}_slide1.jpg')]:
+                  os.path.join(OUTPUT_FOLDER, f'{uid}_slide.jpg')]:
             try:
                 if os.path.exists(p): os.remove(p)
             except: pass
