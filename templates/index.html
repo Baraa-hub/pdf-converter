@@ -351,14 +351,15 @@
 
   function checkPageSelector() {
     const pageSelector = document.getElementById('pageSelector');
-    // Only show page selector for image formats AND multi-page PDFs
-    if ((selectedFmt === 'jpg' || selectedFmt === 'png') && pageCount > 1) {
+    if (selectedFmt && pageCount > 1) {
       pageSelector.style.display = 'block';
-      document.getElementById('allPagesDesc').textContent = `${pageCount} pages as ZIP file`;
+      const isImageFmt = selectedFmt === 'jpg' || selectedFmt === 'png';
+      document.getElementById('allPagesDesc').textContent = isImageFmt
+        ? `${pageCount} pages as ZIP file`
+        : `All ${pageCount} pages`;
       document.getElementById('pageInputHint').textContent = `This PDF has ${pageCount} pages`;
     } else {
       pageSelector.style.display = 'none';
-      // Reset to 'all' when hidden so state is clean
       selectedPages = 'all';
       document.getElementById('pageInputArea').style.display = 'none';
     }
@@ -477,7 +478,7 @@
     if (!selectedFile || !selectedFmt) return;
 
     // Validate page input before converting
-    if ((selectedFmt === 'jpg' || selectedFmt === 'png') && selectedPages === 'specific') {
+    if (selectedPages === 'specific') {
       const pageVal = document.getElementById('pageInput').value.trim();
       if (!pageVal) {
         showStatus('error', '❌ Please enter page numbers.');
@@ -498,8 +499,8 @@
     fd.append('format', selectedFmt);
     fd.append('mode', selectedMode);
 
-    // Send selected pages to backend
-    if ((selectedFmt === 'jpg' || selectedFmt === 'png') && selectedPages === 'specific') {
+    // Send selected pages to backend for all formats
+    if (selectedPages === 'specific') {
       fd.append('pages', document.getElementById('pageInput').value.trim());
     }
 
