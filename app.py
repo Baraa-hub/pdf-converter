@@ -960,8 +960,22 @@ def convert():
     except Exception as e:
         return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
     finally:
+        # Delete uploaded PDF immediately
         if os.path.exists(input_path):
             os.remove(input_path)
+        # Delete output file and any temp page images after sending
+        try:
+            if 'output_path' in locals() and os.path.exists(output_path):
+                os.remove(output_path)
+        except:
+            pass
+        # Clean up any temp page images created during conversion
+        import glob
+        for tmp_file in glob.glob(os.path.join(OUTPUT_FOLDER, f'{uid}_*')):
+            try:
+                os.remove(tmp_file)
+            except:
+                pass
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
