@@ -44,6 +44,11 @@ def is_rtl_text(text):
     return any(unicodedata.bidirectional(c) in ('R', 'AL') for c in text if c.strip())
 
 def fix_rtl(line):
+    try:
+        import arabic_reshaper
+        line = arabic_reshaper.reshape(line)
+    except:
+        pass
     from bidi.algorithm import get_display
     return get_display(line)
 
@@ -579,8 +584,11 @@ def save_as_docx_native(input_path, output_path, uid, pages_param=None):
 
 
 def save_as_docx_text(input_path, output_path, pages_param=None):
+    """OCR-based DOCX — always renders pages to images then runs tesseract.
+    This avoids garbled text from PDFs with custom font encodings."""
     from docx import Document
     from docx.shared import Pt, Inches
+    import pytesseract
 
     doc = Document()
 
@@ -588,6 +596,7 @@ def save_as_docx_text(input_path, output_path, pages_param=None):
         total_pages = len(pdf.pages)
         page_indices = parse_pages(pages_param, total_pages) if pages_param else list(range(total_pages))
         first_page = True
+
         for i in page_indices:
             page = pdf.pages[i]
             if not first_page:
@@ -602,36 +611,14 @@ def save_as_docx_text(input_path, output_path, pages_param=None):
             section.left_margin = Inches(0.75)
             section.right_margin = Inches(0.75)
 
-            words = page.extract_words(
-                x_tolerance=3, y_tolerance=3,
-                keep_blank_chars=False,
-                use_text_flow=False,
-                extra_attrs=['fontname', 'size']
-            )
-
-            if not words:
-                import pytesseract
-                imgs = convert_from_path(input_path, dpi=150,
-                                        first_page=i+1, last_page=i+1)
-                if imgs:
-                    text = pytesseract.image_to_string(imgs[0], lang='eng+ara')
-                    for line in text.split('\n'):
-                        line = clean_text(line)
-                        if line:
-                            para = doc.add_paragraph()
-                            rtl = is_rtl_text(line)
-                            if rtl:
-                                line = fix_rtl(line)
-                                apply_rtl_to_paragraph(para)
-                            run = para.add_run(line)
-                            run.font.size = Pt(11)
-                            if rtl:
-                                apply_rtl_to_run(run)
-                continue
-
-            native_text = page.extract_text(x_tolerance=3, y_tolerance=3)
-            if native_text and native_text.strip():
-                for line in native_text.split('\n'):
+            # Always render to image and OCR — avoids garbled text from
+            # PDFs with custom/private-use font encodings
+            imgs = convert_from_path(input_path, dpi=200,
+                                     first_page=i+1, last_page=i+1,
+                                     use_cropbox=True, strict=False)
+            if imgs:
+                text = pytesseract.image_to_string(imgs[0], lang='eng+ara')
+                for line in text.split('\n'):
                     line = clean_text(line)
                     if line:
                         para = doc.add_paragraph()
@@ -640,32 +627,164 @@ def save_as_docx_text(input_path, output_path, pages_param=None):
                             line = fix_rtl(line)
                             apply_rtl_to_paragraph(para)
                         run = para.add_run(line)
-                        run.font.size = Pt(12)
+                        run.font.size = Pt(11)
                         if rtl:
                             apply_rtl_to_run(run)
-                continue
-
-            lines = {}
-            for word in words:
-                y_key = round(float(word['top']) / 5) * 5
-                if y_key not in lines:
-                    lines[y_key] = []
-                lines[y_key].append(word)
-
-            for y_key in sorted(lines.keys()):
-                line_words = sorted(lines[y_key], key=lambda w: float(w['x0']))
-                para = doc.add_paragraph()
-                para.paragraph_format.space_before = Pt(0)
-                para.paragraph_format.space_after = Pt(0)
-                for word in line_words:
-                    run = para.add_run(clean_text(word['text']) + ' ')
-                    try:
-                        size = float(word.get('size', 12))
-                        run.font.size = Pt(max(6, min(size, 72)))
-                    except:
-                        run.font.size = Pt(12)
 
     doc.save(output_path)
+
+
+def save_as_xlsx(input_path, output_path, pages_param, page_count):
+    """
+    Scan PDF for tables and export each table to a separate Excel sheet.
+    Uses rect-based detection (same as DOCX native) for accuracy.
+    Raises ValueError if no tables found.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    wb.remove(wb.active)  # Remove default empty sheet
+    sheet_count = 0
+
+    with pdfplumber.open(input_path) as pdf:
+        total_pages = len(pdf.pages)
+        page_indices = parse_pages(pages_param, total_pages) if pages_param else list(range(total_pages))
+
+        for page_index in page_indices:
+            page = pdf.pages[page_index]
+            page_w = float(page.width)
+            page_h = float(page.height)
+            rects = page.rects
+
+            # Try rect-based table extraction first
+            cell_rects = [r for r in rects if
+                          r['width'] < page_w * 0.95 and
+                          r['height'] < page_h * 0.3 and
+                          r['width'] > 5 and r['height'] > 5]
+
+            tables = []
+            y_pos = []
+            x_pos = []
+
+            if cell_rects:
+                y_pos = sorted(set(
+                    [round(r['top'], 1) for r in cell_rects] +
+                    [round(r['bottom'], 1) for r in cell_rects]
+                ))
+                x_pos = sorted(set(
+                    [round(r['x0'], 1) for r in cell_rects] +
+                    [round(r['x1'], 1) for r in cell_rects]
+                ))
+                if len(y_pos) >= 2 and len(x_pos) >= 2:
+                    try:
+                        tables = page.extract_tables({
+                            'vertical_strategy': 'explicit',
+                            'horizontal_strategy': 'explicit',
+                            'explicit_vertical_lines': x_pos,
+                            'explicit_horizontal_lines': y_pos,
+                            'snap_tolerance': 4,
+                            'join_tolerance': 4,
+                        }) or []
+                    except:
+                        pass
+
+            # Fallback to line-based
+            if not tables:
+                try:
+                    tables = page.extract_tables({
+                        'vertical_strategy': 'lines',
+                        'horizontal_strategy': 'lines',
+                        'snap_tolerance': 3,
+                    }) or []
+                    y_pos = []
+                    x_pos = []
+                except:
+                    pass
+
+            for t_idx, table_data in enumerate(tables):
+                # Filter empty rows
+                rows = [r for r in table_data if any(c and str(c).strip() for c in r)]
+                if not rows:
+                    continue
+
+                sheet_count += 1
+                sheet_name = f'P{page_index+1}_T{t_idx+1}'
+                ws = wb.create_sheet(title=sheet_name)
+
+                # Get row y spans for color detection
+                row_y_spans = []
+                if len(y_pos) >= 2:
+                    row_y_spans = [(y_pos[i], y_pos[i+1]) for i in range(len(y_pos)-1)]
+                col_x_spans = []
+                if len(x_pos) >= 2:
+                    col_x_spans = [(x_pos[j], x_pos[j+1]) for j in range(len(x_pos)-1)]
+
+                orig_indices = [i for i, r in enumerate(table_data)
+                                if any(c and str(c).strip() for c in r)]
+
+                # Styles
+                thin_border = Border(
+                    left=Side(style='thin'),
+                    right=Side(style='thin'),
+                    top=Side(style='thin'),
+                    bottom=Side(style='thin')
+                )
+
+                for r_idx, row in enumerate(rows):
+                    orig_r = orig_indices[r_idx] if r_idx < len(orig_indices) else r_idx
+                    y_top, y_bottom = row_y_spans[orig_r] if orig_r < len(row_y_spans) else (0, 0)
+
+                    for c_idx, cell_val in enumerate(row):
+                        text = clean_text(str(cell_val) if cell_val else '')
+                        if text.lower() == 'none':
+                            text = ''
+
+                        xl_cell = ws.cell(row=r_idx+1, column=c_idx+1, value=text)
+                        xl_cell.border = thin_border
+                        xl_cell.alignment = Alignment(wrap_text=True, vertical='center')
+
+                        # Detect background color from rects
+                        if y_top != y_bottom and c_idx < len(col_x_spans):
+                            cx0, cx1 = col_x_spans[c_idx]
+                            hex_color = get_rect_color_at(
+                                rects, y_top, y_bottom, cx0, cx1, page_w, page_h)
+                            if hex_color:
+                                try:
+                                    xl_cell.fill = PatternFill(
+                                        start_color=hex_color,
+                                        end_color=hex_color,
+                                        fill_type='solid'
+                                    )
+                                    # White text on dark backgrounds
+                                    r_val = int(hex_color[0:2], 16)
+                                    g_val = int(hex_color[2:4], 16)
+                                    b_val = int(hex_color[4:6], 16)
+                                    brightness = (r_val * 299 + g_val * 587 + b_val * 114) / 1000
+                                    if brightness < 128:
+                                        xl_cell.font = Font(color='FFFFFF', bold=True)
+                                    else:
+                                        xl_cell.font = Font(bold=True)
+                                except:
+                                    pass
+
+                # Auto-fit column widths
+                for col in ws.columns:
+                    max_len = 0
+                    col_letter = get_column_letter(col[0].column)
+                    for cell in col:
+                        try:
+                            if cell.value:
+                                max_len = max(max_len, len(str(cell.value)))
+                        except:
+                            pass
+                    ws.column_dimensions[col_letter].width = min(max(max_len + 2, 8), 50)
+
+    if sheet_count == 0:
+        raise ValueError('No tables detected in this PDF. Try a PDF that contains structured tables with visible borders.')
+
+    wb.save(output_path)
 
 
 def get_page_images(input_path, pages_param, page_count, dpi):
@@ -826,6 +945,12 @@ def convert():
             pages_param = request.form.get('pages', '').strip()
             page_images = get_page_images(input_path, pages_param, page_count, dpi)
             save_as_html_images(page_images, output_path, uid)
+
+        elif fmt == 'xlsx':
+            output_filename = f'{base_name}_converted.xlsx'
+            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+            pages_param = request.form.get('pages', '').strip()
+            save_as_xlsx(input_path, output_path, pages_param or None, page_count)
 
         else:
             return jsonify({'error': 'Unsupported format'}), 400
