@@ -38,9 +38,10 @@
   .card { background: white; border-radius: 20px; padding: 44px; max-width: 600px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.10); flex-shrink: 0; }
 
   /* Mode Toggle */
-  .mode-toggle-wrap { display: flex; align-items: center; justify-content: center; margin-bottom: 28px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .mode-toggle { display: flex; background: #f0f2f5; border-radius: 12px; padding: 4px; gap: 3px; flex-shrink: 0; }
-  .mode-toggle-btn { padding: 7px 11px; border: none; border-radius: 9px; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: transparent; color: #888; white-space: nowrap; }
+  .mode-toggle-wrap { display: flex; align-items: center; justify-content: center; margin-bottom: 28px; }
+  .mode-toggle { display: grid; grid-template-columns: repeat(3, 1fr); background: #f0f2f5; border-radius: 12px; padding: 4px; gap: 3px; width: 100%; }
+  .mode-toggle-btn { padding: 9px 6px; border: none; border-radius: 9px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: transparent; color: #888; white-space: nowrap; text-align: center; }
+  .mode-toggle-btn:hover { color: #4f46e5; background: rgba(99,102,241,0.08); }
   .mode-toggle-btn.active { background: white; color: #4f46e5; box-shadow: 0 2px 8px rgba(0,0,0,0.10); }
 
   .logo-row { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
