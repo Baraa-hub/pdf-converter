@@ -967,7 +967,78 @@ def split_pdf():
             if os.path.exists(output_zip): os.remove(output_zip)
         except: pass
 
-# ── Compress PDF ────────────────────────────────────────────────────────────
+# ── Lock PDF ────────────────────────────────────────────────────────────────
+@app.route('/lock', methods=['POST'])
+def lock_pdf():
+    from pypdf import PdfReader, PdfWriter
+    uid = str(uuid.uuid4())[:8]
+    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
+    output_path = os.path.join(OUTPUT_FOLDER, f'{uid}_locked.pdf')
+    try:
+        f = request.files.get('file')
+        password = request.form.get('password', '').strip()
+        if not f:
+            return jsonify({'error': 'No file uploaded'}), 400
+        if not password:
+            return jsonify({'error': 'Please enter a password'}), 400
+        if len(password) < 4:
+            return jsonify({'error': 'Password must be at least 4 characters'}), 400
+        f.save(input_path)
+        reader = PdfReader(input_path)
+        writer = PdfWriter()
+        for page in reader.pages:
+            writer.add_page(page)
+        writer.encrypt(password)
+        with open(output_path, 'wb') as out:
+            writer.write(out)
+        return send_file(output_path, as_attachment=True, download_name='locked.pdf')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        try:
+            if os.path.exists(input_path): os.remove(input_path)
+        except: pass
+        try:
+            if os.path.exists(output_path): os.remove(output_path)
+        except: pass
+
+# ── Unlock PDF ──────────────────────────────────────────────────────────────
+@app.route('/unlock', methods=['POST'])
+def unlock_pdf():
+    from pypdf import PdfReader, PdfWriter
+    uid = str(uuid.uuid4())[:8]
+    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
+    output_path = os.path.join(OUTPUT_FOLDER, f'{uid}_unlocked.pdf')
+    try:
+        f = request.files.get('file')
+        password = request.form.get('password', '').strip()
+        if not f:
+            return jsonify({'error': 'No file uploaded'}), 400
+        if not password:
+            return jsonify({'error': 'Please enter the PDF password'}), 400
+        f.save(input_path)
+        reader = PdfReader(input_path)
+        if not reader.is_encrypted:
+            return jsonify({'error': 'This PDF is not password protected'}), 400
+        result = reader.decrypt(password)
+        if result == 0:
+            return jsonify({'error': 'Incorrect password. Please try again.'}), 400
+        writer = PdfWriter()
+        for page in reader.pages:
+            writer.add_page(page)
+        with open(output_path, 'wb') as out:
+            writer.write(out)
+        return send_file(output_path, as_attachment=True, download_name='unlocked.pdf')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        try:
+            if os.path.exists(input_path): os.remove(input_path)
+        except: pass
+        try:
+            if os.path.exists(output_path): os.remove(output_path)
+        except: pass
+
 @app.route('/compress', methods=['POST'])
 def compress_pdf():
     import subprocess
