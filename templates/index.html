@@ -39,7 +39,7 @@
 
   /* Mode Toggle */
   .mode-toggle-wrap { display: flex; align-items: center; justify-content: center; margin-bottom: 28px; }
-  .mode-toggle { display: flex; background: #f0f2f5; border-radius: 12px; padding: 4px; gap: 4px; }
+  .mode-toggle { display: flex; background: #f0f2f5; border-radius: 12px; padding: 4px; gap: 4px; flex-wrap: wrap; justify-content: center; }
   .mode-toggle-btn { padding: 9px 20px; border: none; border-radius: 9px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: transparent; color: #888; }
   .mode-toggle-btn.active { background: white; color: #4f46e5; box-shadow: 0 2px 8px rgba(0,0,0,0.10); }
 
@@ -172,6 +172,8 @@
         <button class="mode-toggle-btn" id="btnMerge" onclick="setAppMode('merge')">🔀 Merge</button>
         <button class="mode-toggle-btn" id="btnSplit" onclick="setAppMode('split')">✂️ Split</button>
         <button class="mode-toggle-btn" id="btnCompress" onclick="setAppMode('compress')">🗜️ Compress</button>
+        <button class="mode-toggle-btn" id="btnLock" onclick="setAppMode('lock')">🔒 Lock</button>
+        <button class="mode-toggle-btn" id="btnUnlock" onclick="setAppMode('unlock')">🔓 Unlock</button>
       </div>
     </div>
 
@@ -379,8 +381,74 @@
       <button class="btn" id="compressBtn" disabled>Compress PDF</button>
     </div>
 
-    <!-- Shared -->
-    <div class="convert-progress" id="convertProgress">
+    <!-- ═══════════════════════════════════════ -->
+    <!-- LOCK                                   -->
+    <!-- ═══════════════════════════════════════ -->
+    <div id="lockSection" style="display:none;">
+      <div class="drop-zone" id="lockDropZone">
+        <input type="file" id="lockFileInput" accept=".pdf">
+        <span class="drop-icon">🔒</span>
+        <div class="drop-text">Drop your PDF here or click to browse</div>
+        <div class="drop-hint">PDF files only • Password will be applied</div>
+      </div>
+      <div class="file-selected" id="lockFileSelected" style="display:none;">
+        <div class="file-row">
+          <span>✅</span>
+          <span class="fname" id="lockFileName"></span>
+          <span class="fsize" id="lockFileSize"></span>
+          <button class="remove-file" id="lockRemoveFile">✕</button>
+        </div>
+      </div>
+      <div id="lockOptions" style="display:none; background:#fafafa; border:1.5px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:20px;">
+        <p style="font-size:13px; font-weight:700; color:#555; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">Set Password</p>
+        <div style="position:relative; margin-bottom:10px;">
+          <input type="password" id="lockPassword" placeholder="Enter password (min. 4 characters)" style="width:100%; padding:10px 42px 10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:14px; outline:none;">
+          <button onclick="togglePwd('lockPassword', 'lockEye')" style="position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; font-size:16px;" id="lockEye">👁️</button>
+        </div>
+        <div style="position:relative;">
+          <input type="password" id="lockPasswordConfirm" placeholder="Confirm password" style="width:100%; padding:10px 42px 10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:14px; outline:none;">
+          <button onclick="togglePwd('lockPasswordConfirm', 'lockEye2')" style="position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; font-size:16px;" id="lockEye2">👁️</button>
+        </div>
+        <p id="lockPwdError" style="font-size:12px; color:#dc2626; margin-top:6px; display:none;"></p>
+      </div>
+      <button class="btn" id="lockBtn" disabled>🔒 Lock PDF</button>
+    </div>
+
+    <!-- ═══════════════════════════════════════ -->
+    <!-- UNLOCK                                 -->
+    <!-- ═══════════════════════════════════════ -->
+    <div id="unlockSection" style="display:none;">
+      <div class="drop-zone" id="unlockDropZone">
+        <input type="file" id="unlockFileInput" accept=".pdf">
+        <span class="drop-icon">🔓</span>
+        <div class="drop-text">Drop your protected PDF here or click to browse</div>
+        <div class="drop-hint">PDF files only • You must know the password</div>
+      </div>
+      <div class="file-selected" id="unlockFileSelected" style="display:none;">
+        <div class="file-row">
+          <span>✅</span>
+          <span class="fname" id="unlockFileName"></span>
+          <span class="fsize" id="unlockFileSize"></span>
+          <button class="remove-file" id="unlockRemoveFile">✕</button>
+        </div>
+      </div>
+      <div id="unlockOptions" style="display:none; background:#fafafa; border:1.5px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:20px;">
+        <p style="font-size:13px; font-weight:700; color:#555; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">Enter PDF Password</p>
+        <div style="position:relative;">
+          <input type="password" id="unlockPassword" placeholder="Enter the PDF password" style="width:100%; padding:10px 42px 10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:14px; outline:none;">
+          <button onclick="togglePwd('unlockPassword', 'unlockEye')" style="position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; font-size:16px;" id="unlockEye">👁️</button>
+        </div>
+        <p id="unlockPwdError" style="font-size:12px; color:#dc2626; margin-top:6px; display:none;"></p>
+        <!-- Disclaimer -->
+        <div style="margin-top:14px; padding:12px; background:#fff7ed; border:1.5px solid #fed7aa; border-radius:8px;">
+          <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer;">
+            <input type="checkbox" id="unlockDisclaimer" style="margin-top:2px; flex-shrink:0;">
+            <span style="font-size:12px; color:#92400e; line-height:1.5;">I confirm that I am the owner of this PDF and have the right to remove its password protection.</span>
+          </label>
+        </div>
+      </div>
+      <button class="btn" id="unlockBtn" disabled>🔓 Unlock PDF</button>
+    </div>
       <div class="convert-progress-label" id="convertLabel">Converting... please wait</div>
       <div class="convert-track"><div class="convert-fill" id="convertFill"></div></div>
     </div>
@@ -691,9 +759,9 @@ let subMode = 'from-pdf';
 
 function setAppMode(mode) {
   appMode = mode;
-  const sections = ['convertSection','mergeSection','splitSection','compressSection'];
-  const btns = ['btnFromPdf','btnMerge','btnSplit','btnCompress'];
-  const modes = ['from-pdf','merge','split','compress'];
+  const sections = ['convertSection','mergeSection','splitSection','compressSection','lockSection','unlockSection'];
+  const btns = ['btnFromPdf','btnMerge','btnSplit','btnCompress','btnLock','btnUnlock'];
+  const modes = ['from-pdf','merge','split','compress','lock','unlock'];
   sections.forEach(s => document.getElementById(s).style.display = 'none');
   btns.forEach(b => document.getElementById(b).classList.remove('active'));
   const idx = modes.indexOf(mode);
@@ -706,6 +774,8 @@ function setAppMode(mode) {
     'merge': 'Combine multiple PDF files into one document',
     'split': 'Split a PDF into separate files by page range',
     'compress': 'Reduce your PDF file size while keeping quality',
+    'lock': 'Password protect your PDF — only people with the password can open it',
+    'unlock': 'Remove password protection from your PDF',
   };
   document.getElementById('subtitleText').textContent = subtitles[mode] || '';
   previewPanel.classList.remove('visible');
@@ -1262,6 +1332,136 @@ toPdfBtn.addEventListener('click', async()=>{
     finishConvertProgress(true);showStatus('success','✅ Done! Your PDF has been downloaded.');
   }catch(e){finishConvertProgress(false);showStatus('error','❌ Something went wrong. Please try again.');}
   finally{toPdfBtn.disabled=toPdfFiles.length===0;}
+});
+
+// ── LOCK ───────────────────────────────────────────────────────────────────
+let lockFile = null;
+const lockDropZone = document.getElementById('lockDropZone');
+const lockFileInput = document.getElementById('lockFileInput');
+const lockBtn = document.getElementById('lockBtn');
+
+lockDropZone.addEventListener('click', () => lockFileInput.click());
+lockDropZone.addEventListener('dragover', e => { e.preventDefault(); lockDropZone.classList.add('drag-over'); });
+lockDropZone.addEventListener('dragleave', () => lockDropZone.classList.remove('drag-over'));
+lockDropZone.addEventListener('drop', e => { e.preventDefault(); lockDropZone.classList.remove('drag-over'); setLockFile(e.dataTransfer.files[0]); });
+lockFileInput.addEventListener('change', e => { setLockFile(e.target.files[0]); lockFileInput.value=''; });
+document.getElementById('lockRemoveFile').addEventListener('click', () => {
+  lockFile = null;
+  document.getElementById('lockFileSelected').style.display = 'none';
+  document.getElementById('lockOptions').style.display = 'none';
+  lockDropZone.style.display = 'block';
+  lockBtn.disabled = true;
+  previewPanel.classList.remove('visible');
+});
+
+function setLockFile(f) {
+  if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
+  lockFile = f;
+  document.getElementById('lockFileName').textContent = f.name;
+  document.getElementById('lockFileSize').textContent = formatBytes(f.size);
+  document.getElementById('lockFileSelected').style.display = 'flex';
+  lockDropZone.style.display = 'none';
+  document.getElementById('lockOptions').style.display = 'block';
+  lockBtn.disabled = false;
+  showPreview(f, 'pdf');
+}
+
+function togglePwd(inputId, eyeId) {
+  const inp = document.getElementById(inputId);
+  const eye = document.getElementById(eyeId);
+  if (inp.type === 'password') { inp.type = 'text'; eye.textContent = '🙈'; }
+  else { inp.type = 'password'; eye.textContent = '👁️'; }
+}
+
+lockBtn.addEventListener('click', async () => {
+  if (!lockFile) return;
+  const pwd = document.getElementById('lockPassword').value.trim();
+  const pwd2 = document.getElementById('lockPasswordConfirm').value.trim();
+  const err = document.getElementById('lockPwdError');
+  if (!pwd) { err.textContent='❌ Please enter a password.'; err.style.display='block'; return; }
+  if (pwd.length < 4) { err.textContent='❌ Password must be at least 4 characters.'; err.style.display='block'; return; }
+  if (pwd !== pwd2) { err.textContent='❌ Passwords do not match.'; err.style.display='block'; return; }
+  err.style.display='none';
+  lockBtn.disabled = true; status.style.display='none'; startConvertProgress();
+  const fd = new FormData();
+  fd.append('file', lockFile);
+  fd.append('password', pwd);
+  try {
+    const res = await fetch('/lock', { method: 'POST', body: fd });
+    if (!res.ok) { const d = await res.json(); finishConvertProgress(false); showStatus('error', '❌ ' + (d.error||'Failed.')); return; }
+    const blob = await res.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = lockFile.name.replace('.pdf','_locked.pdf');
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    finishConvertProgress(true); showStatus('success', '✅ Done! Your PDF is now password protected.');
+  } catch(e) { finishConvertProgress(false); showStatus('error', '❌ Something went wrong.'); }
+  finally { lockBtn.disabled = false; }
+});
+
+// ── UNLOCK ─────────────────────────────────────────────────────────────────
+let unlockFile = null;
+const unlockDropZone = document.getElementById('unlockDropZone');
+const unlockFileInput = document.getElementById('unlockFileInput');
+const unlockBtn = document.getElementById('unlockBtn');
+
+unlockDropZone.addEventListener('click', () => unlockFileInput.click());
+unlockDropZone.addEventListener('dragover', e => { e.preventDefault(); unlockDropZone.classList.add('drag-over'); });
+unlockDropZone.addEventListener('dragleave', () => unlockDropZone.classList.remove('drag-over'));
+unlockDropZone.addEventListener('drop', e => { e.preventDefault(); unlockDropZone.classList.remove('drag-over'); setUnlockFile(e.dataTransfer.files[0]); });
+unlockFileInput.addEventListener('change', e => { setUnlockFile(e.target.files[0]); unlockFileInput.value=''; });
+document.getElementById('unlockRemoveFile').addEventListener('click', () => {
+  unlockFile = null;
+  document.getElementById('unlockFileSelected').style.display = 'none';
+  document.getElementById('unlockOptions').style.display = 'none';
+  unlockDropZone.style.display = 'block';
+  unlockBtn.disabled = true;
+  previewPanel.classList.remove('visible');
+});
+document.getElementById('unlockDisclaimer').addEventListener('change', function() {
+  unlockBtn.disabled = !(unlockFile && this.checked);
+});
+
+function setUnlockFile(f) {
+  if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
+  unlockFile = f;
+  document.getElementById('unlockFileName').textContent = f.name;
+  document.getElementById('unlockFileSize').textContent = formatBytes(f.size);
+  document.getElementById('unlockFileSelected').style.display = 'flex';
+  unlockDropZone.style.display = 'none';
+  document.getElementById('unlockOptions').style.display = 'block';
+  unlockBtn.disabled = !document.getElementById('unlockDisclaimer').checked;
+  showPreview(f, 'pdf');
+}
+
+unlockBtn.addEventListener('click', async () => {
+  if (!unlockFile || !document.getElementById('unlockDisclaimer').checked) return;
+  const pwd = document.getElementById('unlockPassword').value.trim();
+  const err = document.getElementById('unlockPwdError');
+  if (!pwd) { err.textContent='❌ Please enter the PDF password.'; err.style.display='block'; return; }
+  err.style.display='none';
+  unlockBtn.disabled = true; status.style.display='none'; startConvertProgress();
+  const fd = new FormData();
+  fd.append('file', unlockFile);
+  fd.append('password', pwd);
+  try {
+    const res = await fetch('/unlock', { method: 'POST', body: fd });
+    if (!res.ok) {
+      const d = await res.json();
+      finishConvertProgress(false);
+      const msg = d.error || 'Failed.';
+      if (msg.includes('Incorrect')) {
+        err.textContent = '❌ ' + msg + " If you've forgotten the password, we're unable to recover it.";
+        err.style.display = 'block';
+      } else {
+        showStatus('error', '❌ ' + msg);
+      }
+      return;
+    }
+    const blob = await res.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = unlockFile.name.replace('.pdf','_unlocked.pdf');
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    finishConvertProgress(true); showStatus('success', '✅ Done! Password protection has been removed.');
+  } catch(e) { finishConvertProgress(false); showStatus('error', '❌ Something went wrong.'); }
+  finally { unlockBtn.disabled = !document.getElementById('unlockDisclaimer').checked; }
 });
 </script>
 </body>
