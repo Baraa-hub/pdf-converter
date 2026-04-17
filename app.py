@@ -866,6 +866,10 @@ def sitemap():
 def robots():
     return send_file('robots.txt', mimetype='text/plain')
 
+@app.route('/googleb1f0346b7552c5ac.html')
+def google_verify():
+    return send_file('googleb1f0346b7552c5ac.html', mimetype='text/html')
+
 @app.route('/privacy')
 def privacy():
     return render_template('privacy.html')
