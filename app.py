@@ -831,6 +831,172 @@ def index():
 def privacy():
     return render_template('privacy.html')
 
+# ── Merge PDFs ──────────────────────────────────────────────────────────────
+@app.route('/merge', methods=['POST'])
+def merge_pdfs():
+    from pypdf import PdfWriter
+    uid = str(uuid.uuid4())[:8]
+    saved_paths = []
+    output_path = os.path.join(OUTPUT_FOLDER, f'{uid}_merged.pdf')
+    try:
+        files = request.files.getlist('files')
+        if not files or len(files) < 2:
+            return jsonify({'error': 'Please upload at least 2 PDF files'}), 400
+        writer = PdfWriter()
+        for f in files:
+            if not f.filename.lower().endswith('.pdf'):
+                return jsonify({'error': f'{f.filename} is not a PDF'}), 400
+            p = os.path.join(UPLOAD_FOLDER, f'{uid}_{len(saved_paths)}.pdf')
+            f.save(p)
+            saved_paths.append(p)
+            from pypdf import PdfReader
+            reader = PdfReader(p)
+            for page in reader.pages:
+                writer.add_page(page)
+        with open(output_path, 'wb') as out:
+            writer.write(out)
+        return send_file(output_path, as_attachment=True, download_name='merged.pdf')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        for p in saved_paths:
+            try:
+                if os.path.exists(p): os.remove(p)
+            except: pass
+        try:
+            if os.path.exists(output_path): os.remove(output_path)
+        except: pass
+
+# ── Split PDF ───────────────────────────────────────────────────────────────
+@app.route('/split', methods=['POST'])
+def split_pdf():
+    from pypdf import PdfReader, PdfWriter
+    uid = str(uuid.uuid4())[:8]
+    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
+    output_zip = os.path.join(OUTPUT_FOLDER, f'{uid}_split.zip')
+    output_paths = []
+    try:
+        f = request.files.get('file')
+        if not f:
+            return jsonify({'error': 'No file uploaded'}), 400
+        split_type = request.form.get('split_type', 'all')  # 'all' or 'range'
+        f.save(input_path)
+        reader = PdfReader(input_path)
+        total = len(reader.pages)
+
+        if split_type == 'all':
+            # Every page becomes its own PDF
+            ranges = [(i, i) for i in range(total)]
+        else:
+            # Parse range like "1-3, 5-7, 9"
+            pages_param = request.form.get('pages', '').strip()
+            ranges = []
+            for part in pages_param.split(','):
+                part = part.strip()
+                if '-' in part:
+                    s, e = part.split('-')
+                    ranges.append((int(s.strip())-1, int(e.strip())-1))
+                elif part:
+                    n = int(part) - 1
+                    ranges.append((n, n))
+
+        if not ranges:
+            return jsonify({'error': 'No valid page ranges specified'}), 400
+
+        for idx, (start, end) in enumerate(ranges):
+            writer = PdfWriter()
+            for page_num in range(max(0, start), min(end+1, total)):
+                writer.add_page(reader.pages[page_num])
+            out_path = os.path.join(OUTPUT_FOLDER, f'{uid}_part{idx+1}.pdf')
+            with open(out_path, 'wb') as out:
+                writer.write(out)
+            output_paths.append((out_path, f'part_{idx+1}_pages_{start+1}-{end+1}.pdf'))
+
+        if len(output_paths) == 1:
+            # Single output — return directly
+            return send_file(output_paths[0][0], as_attachment=True,
+                           download_name=output_paths[0][1])
+        else:
+            # Multiple outputs — zip them
+            with zipfile.ZipFile(output_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for path, arcname in output_paths:
+                    zf.write(path, arcname)
+            return send_file(output_zip, as_attachment=True, download_name='split_pages.zip')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        try:
+            if os.path.exists(input_path): os.remove(input_path)
+        except: pass
+        for path, _ in output_paths:
+            try:
+                if os.path.exists(path): os.remove(path)
+            except: pass
+        try:
+            if os.path.exists(output_zip): os.remove(output_zip)
+        except: pass
+
+# ── Compress PDF ────────────────────────────────────────────────────────────
+@app.route('/compress', methods=['POST'])
+def compress_pdf():
+    import subprocess
+    uid = str(uuid.uuid4())[:8]
+    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
+    output_path = os.path.join(OUTPUT_FOLDER, f'{uid}_compressed.pdf')
+    try:
+        f = request.files.get('file')
+        if not f:
+            return jsonify({'error': 'No file uploaded'}), 400
+        level = request.form.get('level', 'medium')  # low, medium, high
+        f.save(input_path)
+        original_size = os.path.getsize(input_path)
+
+        # Use Ghostscript if available, otherwise pypdf
+        gs_settings = {
+            'low':    '/printer',
+            'medium': '/ebook',
+            'high':   '/screen',
+        }
+        gs_setting = gs_settings.get(level, '/ebook')
+
+        gs_result = subprocess.run([
+            'gs', '-sDEVICE=pdfwrite', '-dCompatibilityLevel=1.4',
+            f'-dPDFSETTINGS={gs_setting}',
+            '-dNOPAUSE', '-dQUIET', '-dBATCH',
+            f'-sOutputFile={output_path}', input_path
+        ], capture_output=True, timeout=120)
+
+        if gs_result.returncode != 0 or not os.path.exists(output_path):
+            # Fallback: pypdf compression
+            from pypdf import PdfReader, PdfWriter
+            reader = PdfReader(input_path)
+            writer = PdfWriter()
+            for page in reader.pages:
+                page.compress_content_streams()
+                writer.add_page(page)
+            with open(output_path, 'wb') as out:
+                writer.write(out)
+
+        compressed_size = os.path.getsize(output_path)
+        reduction = round((1 - compressed_size / original_size) * 100, 1)
+
+        response = send_file(output_path, as_attachment=True,
+                           download_name='compressed.pdf')
+        response.headers['X-Original-Size'] = str(original_size)
+        response.headers['X-Compressed-Size'] = str(compressed_size)
+        response.headers['X-Reduction'] = str(reduction)
+        return response
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        try:
+            if os.path.exists(input_path): os.remove(input_path)
+        except: pass
+        try:
+            if os.path.exists(output_path): os.remove(output_path)
+        except: pass
+
+
 def convert_office_to_pdf(input_path, output_dir):
     """Convert DOCX/XLSX/PPTX to PDF using LibreOffice headless."""
     import subprocess
