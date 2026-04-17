@@ -165,11 +165,13 @@
 
   <!-- Main Card -->
   <div class="card">
-    <!-- Mode Toggle -->
+    <!-- Top Tab Bar -->
     <div class="mode-toggle-wrap">
       <div class="mode-toggle">
-        <button class="mode-toggle-btn active" id="btnFromPdf" onclick="setAppMode('from-pdf')">📄 PDF → Convert</button>
-        <button class="mode-toggle-btn" id="btnToPdf" onclick="setAppMode('to-pdf')">Convert → PDF 📄</button>
+        <button class="mode-toggle-btn active" id="btnFromPdf" onclick="setAppMode('from-pdf')">🔄 Convert PDF</button>
+        <button class="mode-toggle-btn" id="btnMerge" onclick="setAppMode('merge')">🔀 Merge</button>
+        <button class="mode-toggle-btn" id="btnSplit" onclick="setAppMode('split')">✂️ Split</button>
+        <button class="mode-toggle-btn" id="btnCompress" onclick="setAppMode('compress')">🗜️ Compress</button>
       </div>
     </div>
 
@@ -180,8 +182,15 @@
     <p class="subtitle" id="subtitleText">Convert your PDF to Word, Excel, PowerPoint, HTML, or images instantly</p>
 
     <!-- ═══════════════════════════════════════ -->
-    <!-- MODE A: PDF → X                        -->
+    <!-- MODE A: PDF → X (and X → PDF)          -->
     <!-- ═══════════════════════════════════════ -->
+    <div id="convertSection">
+      <!-- Sub-toggle -->
+      <div style="display:flex; gap:8px; margin-bottom:24px;">
+        <button id="subBtnFromPdf" onclick="setSubMode('from-pdf')" style="flex:1; padding:9px; border:1.5px solid #6366f1; border-radius:9px; background:#eef2ff; color:#4f46e5; font-size:13px; font-weight:700; cursor:pointer;">📄 PDF → File</button>
+        <button id="subBtnToPdf" onclick="setSubMode('to-pdf')" style="flex:1; padding:9px; border:1.5px solid #e5e7eb; border-radius:9px; background:white; color:#888; font-size:13px; font-weight:700; cursor:pointer;">File → PDF 📄</button>
+      </div>
+
     <div id="fromPdfSection">
       <div class="drop-zone" id="dropZone">
         <input type="file" id="fileInput" accept=".pdf">
@@ -256,6 +265,103 @@
       </div>
       <div class="files-list" id="filesList"></div>
       <button class="btn" id="toPdfBtn" disabled>Convert to PDF</button>
+    </div>
+    </div><!-- end convertSection -->
+
+    <!-- ═══════════════════════════════════════ -->
+    <!-- MERGE                                  -->
+    <!-- ═══════════════════════════════════════ -->
+    <div id="mergeSection" style="display:none;">
+      <div class="drop-zone" id="mergeDropZone">
+        <input type="file" id="mergeFileInput" accept=".pdf" multiple>
+        <span class="drop-icon">🔀</span>
+        <div class="drop-text">Drop PDF files here or click to browse</div>
+        <div class="drop-hint">Multiple PDF files • Combined into one • Drag to reorder</div>
+      </div>
+      <div class="files-list" id="mergeFilesList"></div>
+      <button class="btn" id="mergeBtn" disabled>Merge PDFs</button>
+    </div>
+
+    <!-- ═══════════════════════════════════════ -->
+    <!-- SPLIT                                  -->
+    <!-- ═══════════════════════════════════════ -->
+    <div id="splitSection" style="display:none;">
+      <div class="drop-zone" id="splitDropZone">
+        <input type="file" id="splitFileInput" accept=".pdf">
+        <span class="drop-icon">✂️</span>
+        <div class="drop-text">Drop your PDF here or click to browse</div>
+        <div class="drop-hint">PDF files only • Single file</div>
+      </div>
+      <div class="file-selected" id="splitFileSelected" style="display:none;">
+        <div class="file-row">
+          <span>✅</span>
+          <span class="fname" id="splitFileName"></span>
+          <span class="fsize" id="splitFileSize"></span>
+          <button class="remove-file" id="splitRemoveFile">✕</button>
+        </div>
+      </div>
+      <!-- Split options -->
+      <div id="splitOptions" style="display:none; background:#fafafa; border:1.5px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:20px;">
+        <p style="font-size:13px; font-weight:700; color:#555; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">Split method</p>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;">
+          <div id="splitOptAll" onclick="setSplitType('all')" style="border:1.5px solid #6366f1; border-radius:10px; padding:14px 12px; cursor:pointer; background:#eef2ff; text-align:left;">
+            <span style="font-size:14px; font-weight:700; color:#4f46e5; display:block; margin-bottom:4px;">📄 Every page</span>
+            <span style="font-size:12px; color:#888; display:block;">Each page becomes a separate PDF</span>
+          </div>
+          <div id="splitOptRange" onclick="setSplitType('range')" style="border:1.5px solid #e5e7eb; border-radius:10px; padding:14px 12px; cursor:pointer; background:white; text-align:left;">
+            <span style="font-size:14px; font-weight:700; color:#333; display:block; margin-bottom:4px;">📋 Custom ranges</span>
+            <span style="font-size:12px; color:#888; display:block;">Define your own page groups</span>
+          </div>
+        </div>
+        <div id="splitRangeInput" style="display:none;">
+          <label style="font-size:13px; color:#555; font-weight:500; display:block; margin-bottom:6px;">Enter ranges (e.g. 1-3, 4-6, 7)</label>
+          <input type="text" id="splitRangeVal" placeholder="e.g. 1-3, 4-6, 7-10" style="width:100%; padding:10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:14px; outline:none;">
+          <p id="splitPageHint" style="font-size:12px; color:#888; margin-top:6px;"></p>
+        </div>
+      </div>
+      <button class="btn" id="splitBtn" disabled>Split PDF</button>
+    </div>
+
+    <!-- ═══════════════════════════════════════ -->
+    <!-- COMPRESS                               -->
+    <!-- ═══════════════════════════════════════ -->
+    <div id="compressSection" style="display:none;">
+      <div class="drop-zone" id="compressDropZone">
+        <input type="file" id="compressFileInput" accept=".pdf">
+        <span class="drop-icon">🗜️</span>
+        <div class="drop-text">Drop your PDF here or click to browse</div>
+        <div class="drop-hint">PDF files only • Reduces file size</div>
+      </div>
+      <div class="file-selected" id="compressFileSelected" style="display:none;">
+        <div class="file-row">
+          <span>✅</span>
+          <span class="fname" id="compressFileName"></span>
+          <span class="fsize" id="compressFileSize"></span>
+          <button class="remove-file" id="compressRemoveFile">✕</button>
+        </div>
+      </div>
+      <!-- Compression level -->
+      <div id="compressOptions" style="display:none; background:#fafafa; border:1.5px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:20px;">
+        <p style="font-size:13px; font-weight:700; color:#555; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">Compression level</p>
+        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px;">
+          <div id="compressLow" onclick="setCompressLevel('low')" style="border:1.5px solid #e5e7eb; border-radius:10px; padding:12px 8px; cursor:pointer; background:white; text-align:center;">
+            <span style="font-size:18px; display:block; margin-bottom:4px;">🟢</span>
+            <span style="font-size:13px; font-weight:700; color:#333; display:block;">Low</span>
+            <span style="font-size:11px; color:#888;">Better quality</span>
+          </div>
+          <div id="compressMedium" onclick="setCompressLevel('medium')" style="border:1.5px solid #6366f1; border-radius:10px; padding:12px 8px; cursor:pointer; background:#eef2ff; text-align:center;">
+            <span style="font-size:18px; display:block; margin-bottom:4px;">🟡</span>
+            <span style="font-size:13px; font-weight:700; color:#4f46e5; display:block;">Medium</span>
+            <span style="font-size:11px; color:#888;">Recommended</span>
+          </div>
+          <div id="compressHigh" onclick="setCompressLevel('high')" style="border:1.5px solid #e5e7eb; border-radius:10px; padding:12px 8px; cursor:pointer; background:white; text-align:center;">
+            <span style="font-size:18px; display:block; margin-bottom:4px;">🔴</span>
+            <span style="font-size:13px; font-weight:700; color:#333; display:block;">High</span>
+            <span style="font-size:11px; color:#888;">Smaller size</span>
+          </div>
+        </div>
+      </div>
+      <button class="btn" id="compressBtn" disabled>Compress PDF</button>
     </div>
 
     <!-- Shared -->
@@ -566,21 +672,247 @@ async function showPreview(fileOrFiles, type) {
 }
 
 // ── App Mode Toggle ────────────────────────────────────────────────────────
+let subMode = 'from-pdf';
+
 function setAppMode(mode) {
   appMode = mode;
-  document.getElementById('fromPdfSection').style.display = mode === 'from-pdf' ? 'block' : 'none';
-  document.getElementById('toPdfSection').style.display = mode === 'to-pdf' ? 'block' : 'none';
-  document.getElementById('btnFromPdf').classList.toggle('active', mode === 'from-pdf');
-  document.getElementById('btnToPdf').classList.toggle('active', mode === 'to-pdf');
-  document.getElementById('subtitleText').textContent = mode === 'from-pdf'
-    ? 'Convert your PDF to Word, Excel, PowerPoint, HTML, or images instantly'
-    : 'Convert your images, Word, Excel, or PowerPoint files to PDF instantly';
-  // Hide preview when switching modes
+  const sections = ['convertSection','mergeSection','splitSection','compressSection'];
+  const btns = ['btnFromPdf','btnMerge','btnSplit','btnCompress'];
+  const modes = ['from-pdf','merge','split','compress'];
+  sections.forEach(s => document.getElementById(s).style.display = 'none');
+  btns.forEach(b => document.getElementById(b).classList.remove('active'));
+  const idx = modes.indexOf(mode);
+  if (idx >= 0) {
+    document.getElementById(sections[idx]).style.display = 'block';
+    document.getElementById(btns[idx]).classList.add('active');
+  }
+  const subtitles = {
+    'from-pdf': 'Convert your PDF to Word, Excel, PowerPoint, HTML, or images instantly',
+    'merge': 'Combine multiple PDF files into one document',
+    'split': 'Split a PDF into separate files by page range',
+    'compress': 'Reduce your PDF file size while keeping quality',
+  };
+  document.getElementById('subtitleText').textContent = subtitles[mode] || '';
   previewPanel.classList.remove('visible');
   hideAllPreviews();
   document.getElementById('status').style.display = 'none';
   document.getElementById('convertProgress').style.display = 'none';
 }
+
+function setSubMode(mode) {
+  subMode = mode;
+  const fromActive = mode === 'from-pdf';
+  const sub1 = document.getElementById('subBtnFromPdf');
+  const sub2 = document.getElementById('subBtnToPdf');
+  sub1.style.borderColor = fromActive ? '#6366f1' : '#e5e7eb';
+  sub1.style.background = fromActive ? '#eef2ff' : 'white';
+  sub1.style.color = fromActive ? '#4f46e5' : '#888';
+  sub2.style.borderColor = !fromActive ? '#6366f1' : '#e5e7eb';
+  sub2.style.background = !fromActive ? '#eef2ff' : 'white';
+  sub2.style.color = !fromActive ? '#4f46e5' : '#888';
+  document.getElementById('fromPdfSection').style.display = fromActive ? 'block' : 'none';
+  document.getElementById('toPdfSection').style.display = !fromActive ? 'block' : 'none';
+  previewPanel.classList.remove('visible');
+  document.getElementById('status').style.display = 'none';
+}
+
+// ── MERGE ──────────────────────────────────────────────────────────────────
+let mergeFiles = [];
+const mergeDropZone = document.getElementById('mergeDropZone');
+const mergeFileInput = document.getElementById('mergeFileInput');
+const mergeBtn = document.getElementById('mergeBtn');
+
+mergeDropZone.addEventListener('click', () => mergeFileInput.click());
+mergeDropZone.addEventListener('dragover', e => { e.preventDefault(); mergeDropZone.classList.add('drag-over'); });
+mergeDropZone.addEventListener('dragleave', () => mergeDropZone.classList.remove('drag-over'));
+mergeDropZone.addEventListener('drop', e => { e.preventDefault(); mergeDropZone.classList.remove('drag-over'); addMergeFiles(e.dataTransfer.files); });
+mergeFileInput.addEventListener('change', e => { addMergeFiles(e.target.files); mergeFileInput.value = ''; });
+
+function addMergeFiles(fileList) {
+  Array.from(fileList).forEach(f => {
+    if (f.name.toLowerCase().endsWith('.pdf')) mergeFiles.push(f);
+  });
+  renderMergeList();
+  mergeBtn.disabled = mergeFiles.length < 2;
+}
+
+function renderMergeList() {
+  const list = document.getElementById('mergeFilesList');
+  if (mergeFiles.length === 0) { list.style.display = 'none'; return; }
+  list.style.display = 'flex';
+  list.innerHTML = mergeFiles.map((f, i) => `
+    <div class="file-item">
+      <span style="color:#888; font-size:13px; flex-shrink:0;">${i+1}.</span>
+      <span class="fname">📄 ${f.name}</span>
+      <span class="fsize">${formatBytes(f.size)}</span>
+      <button class="remove-file" onclick="removeMergeFile(${i})">✕</button>
+    </div>`).join('');
+  // Show preview of first PDF
+  if (mergeFiles.length > 0) showPreview(mergeFiles[0], 'pdf');
+}
+
+function removeMergeFile(idx) {
+  mergeFiles.splice(idx, 1);
+  renderMergeList();
+  mergeBtn.disabled = mergeFiles.length < 2;
+  if (mergeFiles.length === 0) previewPanel.classList.remove('visible');
+}
+
+mergeBtn.addEventListener('click', async () => {
+  if (mergeFiles.length < 2) return;
+  mergeBtn.disabled = true; status.style.display = 'none'; startConvertProgress();
+  const fd = new FormData();
+  mergeFiles.forEach(f => fd.append('files', f));
+  try {
+    const res = await fetch('/merge', { method: 'POST', body: fd });
+    if (!res.ok) { const d = await res.json(); finishConvertProgress(false); showStatus('error', '❌ ' + (d.error || 'Merge failed.')); return; }
+    const blob = await res.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = 'merged.pdf';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    finishConvertProgress(true); showStatus('success', `✅ Done! ${mergeFiles.length} PDFs merged successfully.`);
+  } catch(e) { finishConvertProgress(false); showStatus('error', '❌ Something went wrong.'); }
+  finally { mergeBtn.disabled = mergeFiles.length < 2; }
+});
+
+// ── SPLIT ──────────────────────────────────────────────────────────────────
+let splitFile = null, splitType = 'all', splitPageCount = 1;
+const splitDropZone = document.getElementById('splitDropZone');
+const splitFileInput = document.getElementById('splitFileInput');
+const splitBtn = document.getElementById('splitBtn');
+
+splitDropZone.addEventListener('click', () => splitFileInput.click());
+splitDropZone.addEventListener('dragover', e => { e.preventDefault(); splitDropZone.classList.add('drag-over'); });
+splitDropZone.addEventListener('dragleave', () => splitDropZone.classList.remove('drag-over'));
+splitDropZone.addEventListener('drop', e => { e.preventDefault(); splitDropZone.classList.remove('drag-over'); setSplitFile(e.dataTransfer.files[0]); });
+splitFileInput.addEventListener('change', e => { setSplitFile(e.target.files[0]); splitFileInput.value = ''; });
+document.getElementById('splitRemoveFile').addEventListener('click', () => {
+  splitFile = null;
+  document.getElementById('splitFileSelected').style.display = 'none';
+  document.getElementById('splitOptions').style.display = 'none';
+  splitDropZone.style.display = 'block';
+  splitBtn.disabled = true;
+  previewPanel.classList.remove('visible');
+});
+
+async function setSplitFile(f) {
+  if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
+  splitFile = f;
+  document.getElementById('splitFileName').textContent = f.name;
+  document.getElementById('splitFileSize').textContent = formatBytes(f.size);
+  document.getElementById('splitFileSelected').style.display = 'flex';
+  splitDropZone.style.display = 'none';
+  document.getElementById('splitOptions').style.display = 'block';
+  splitBtn.disabled = false;
+  // Get page count via detect
+  const fd = new FormData(); fd.append('file', f);
+  const xhr = new XMLHttpRequest();
+  xhr.onload = function() {
+    try { const d = JSON.parse(xhr.responseText); splitPageCount = d.page_count || 1; document.getElementById('splitPageHint').textContent = `This PDF has ${splitPageCount} pages`; } catch(e){}
+  };
+  xhr.open('POST', '/detect'); xhr.send(fd);
+  showPreview(f, 'pdf');
+}
+
+function setSplitType(type) {
+  splitType = type;
+  const allEl = document.getElementById('splitOptAll'), rangeEl = document.getElementById('splitOptRange');
+  if (type === 'all') {
+    allEl.style.borderColor='#6366f1'; allEl.style.background='#eef2ff'; allEl.querySelector('span').style.color='#4f46e5';
+    rangeEl.style.borderColor='#e5e7eb'; rangeEl.style.background='white'; rangeEl.querySelector('span').style.color='#333';
+    document.getElementById('splitRangeInput').style.display = 'none';
+  } else {
+    rangeEl.style.borderColor='#6366f1'; rangeEl.style.background='#eef2ff'; rangeEl.querySelector('span').style.color='#4f46e5';
+    allEl.style.borderColor='#e5e7eb'; allEl.style.background='white'; allEl.querySelector('span').style.color='#333';
+    document.getElementById('splitRangeInput').style.display = 'block';
+  }
+}
+
+splitBtn.addEventListener('click', async () => {
+  if (!splitFile) return;
+  splitBtn.disabled = true; status.style.display = 'none'; startConvertProgress();
+  const fd = new FormData();
+  fd.append('file', splitFile);
+  fd.append('split_type', splitType);
+  if (splitType === 'range') fd.append('pages', document.getElementById('splitRangeVal').value.trim());
+  try {
+    const res = await fetch('/split', { method: 'POST', body: fd });
+    if (!res.ok) { const d = await res.json(); finishConvertProgress(false); showStatus('error', '❌ ' + (d.error || 'Split failed.')); return; }
+    const blob = await res.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url;
+    const cd = res.headers.get('Content-Disposition') || '';
+    a.download = cd.match(/filename="?([^"]+)"?/)?.[1] || 'split_pages.zip';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    finishConvertProgress(true); showStatus('success', '✅ Done! PDF split successfully.');
+  } catch(e) { finishConvertProgress(false); showStatus('error', '❌ Something went wrong.'); }
+  finally { splitBtn.disabled = false; }
+});
+
+// ── COMPRESS ───────────────────────────────────────────────────────────────
+let compressFile = null, compressLevel = 'medium';
+const compressDropZone = document.getElementById('compressDropZone');
+const compressFileInput = document.getElementById('compressFileInput');
+const compressBtn = document.getElementById('compressBtn');
+
+compressDropZone.addEventListener('click', () => compressFileInput.click());
+compressDropZone.addEventListener('dragover', e => { e.preventDefault(); compressDropZone.classList.add('drag-over'); });
+compressDropZone.addEventListener('dragleave', () => compressDropZone.classList.remove('drag-over'));
+compressDropZone.addEventListener('drop', e => { e.preventDefault(); compressDropZone.classList.remove('drag-over'); setCompressFile(e.dataTransfer.files[0]); });
+compressFileInput.addEventListener('change', e => { setCompressFile(e.target.files[0]); compressFileInput.value = ''; });
+document.getElementById('compressRemoveFile').addEventListener('click', () => {
+  compressFile = null;
+  document.getElementById('compressFileSelected').style.display = 'none';
+  document.getElementById('compressOptions').style.display = 'none';
+  compressDropZone.style.display = 'block';
+  compressBtn.disabled = true;
+  previewPanel.classList.remove('visible');
+});
+
+function setCompressFile(f) {
+  if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
+  compressFile = f;
+  document.getElementById('compressFileName').textContent = f.name;
+  document.getElementById('compressFileSize').textContent = formatBytes(f.size);
+  document.getElementById('compressFileSelected').style.display = 'flex';
+  compressDropZone.style.display = 'none';
+  document.getElementById('compressOptions').style.display = 'block';
+  compressBtn.disabled = false;
+  showPreview(f, 'pdf');
+}
+
+function setCompressLevel(level) {
+  compressLevel = level;
+  ['Low','Medium','High'].forEach(l => {
+    const el = document.getElementById('compress'+l);
+    const active = l.toLowerCase() === level;
+    el.style.borderColor = active ? '#6366f1' : '#e5e7eb';
+    el.style.background = active ? '#eef2ff' : 'white';
+    el.querySelector('span:nth-child(2)').style.color = active ? '#4f46e5' : '#333';
+  });
+}
+
+compressBtn.addEventListener('click', async () => {
+  if (!compressFile) return;
+  compressBtn.disabled = true; status.style.display = 'none'; startConvertProgress();
+  const fd = new FormData();
+  fd.append('file', compressFile);
+  fd.append('level', compressLevel);
+  try {
+    const res = await fetch('/compress', { method: 'POST', body: fd });
+    if (!res.ok) { const d = await res.json(); finishConvertProgress(false); showStatus('error', '❌ ' + (d.error || 'Compression failed.')); return; }
+    const origSize = parseInt(res.headers.get('X-Original-Size') || '0');
+    const compSize = parseInt(res.headers.get('X-Compressed-Size') || '0');
+    const reduction = res.headers.get('X-Reduction') || '0';
+    const blob = await res.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = 'compressed.pdf';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    finishConvertProgress(true);
+    const msg = reduction > 0
+      ? `✅ Done! Reduced from ${formatBytes(origSize)} to ${formatBytes(compSize)} (${reduction}% smaller)`
+      : `✅ Done! File downloaded.`;
+    showStatus('success', msg);
+  } catch(e) { finishConvertProgress(false); showStatus('error', '❌ Something went wrong.'); }
+  finally { compressBtn.disabled = false; }
+});
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 function formatBytes(b) {
