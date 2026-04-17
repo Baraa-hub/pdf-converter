@@ -1,0 +1,13 @@
+User-agent: *
+Allow: /
+Disallow: /convert
+Disallow: /detect
+Disallow: /merge
+Disallow: /split
+Disallow: /compress
+Disallow: /lock
+Disallow: /unlock
+Disallow: /convert-to-pdf
+Disallow: /preview-pptx
+
+Sitemap: https://ieatpdf.com/sitemap.xml
