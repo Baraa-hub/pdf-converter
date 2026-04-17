@@ -1157,6 +1157,7 @@ def preview_pptx():
             except: pass
 
 
+@app.route('/convert', methods=['POST'])
 def convert():
     if 'file' not in request.files:
         return jsonify({'error': 'No file uploaded'}), 400
