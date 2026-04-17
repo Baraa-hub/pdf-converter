@@ -537,6 +537,14 @@
       <button class="btn" id="unlockBtn" disabled>🔓 Unlock PDF</button>
     </div>
 
+    <!-- Shared upload progress bar (shown during file uploads in all sections) -->
+    <div id="uploadProgressShared" style="display:none; flex-direction:column; gap:6px; margin-bottom:16px;">
+      <div id="uploadLabelShared" style="font-size:12px; color:#4f46e5; font-weight:500;">Uploading...</div>
+      <div style="background:#eef2ff; border-radius:99px; height:6px; overflow:hidden;">
+        <div id="uploadFillShared" style="height:100%; background:#4f46e5; border-radius:99px; width:0%; transition:width 0.2s;"></div>
+      </div>
+    </div>
+
     <!-- Shared progress + status -->
     <div class="convert-progress" id="convertProgress">
       <div class="convert-progress-label" id="convertLabel">Converting... please wait</div>
@@ -998,11 +1006,13 @@ function addMergeFiles(fileList) {
 
 async function checkMergeEncryption() {
   for (let i = 0; i < mergeFiles.length; i++) {
+    showUploadProgress(`Checking file ${i+1} of ${mergeFiles.length}...`);
     const fd = new FormData(); fd.append('file', mergeFiles[i]);
     try {
-      const res = await fetch('/detect', { method: 'POST', body: fd });
-      const d = await res.json();
+      const r = await fetchWithProgress('/detect', fd, pct => updateUploadProgress(pct, `Uploading ${i+1}/${mergeFiles.length}... ${pct}%`));
+      const d = await r.json();
       if (d.is_encrypted) {
+        hideUploadProgress();
         showStatus('error', `❌ "${mergeFiles[i].name}" is password protected. Please unlock it first before merging.`);
         mergeFiles.splice(i, 1);
         renderMergeList();
@@ -1011,6 +1021,8 @@ async function checkMergeEncryption() {
       }
     } catch(e) {}
   }
+  updateUploadProgress(100, 'Ready ✓');
+  hideUploadProgress();
 }
 
 function renderMergeList() {
@@ -1073,17 +1085,20 @@ document.getElementById('splitRemoveFile').addEventListener('click', () => {
 
 async function setSplitFile(f) {
   if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
+  showUploadProgress('Uploading & analyzing...');
   // Check encryption first
   const fd0 = new FormData(); fd0.append('file', f);
   try {
-    const r = await fetch('/detect', { method: 'POST', body: fd0 });
+    const r = await fetchWithProgress('/detect', fd0, (pct) => updateUploadProgress(pct, `Uploading... ${pct}%`));
     const d = await r.json();
+    updateUploadProgress(100, 'Upload complete ✓');
+    hideUploadProgress();
     if (d.is_encrypted) {
       showStatus('error', '❌ This PDF is password protected. Please unlock it first before splitting.');
       return;
     }
     splitPageCount = d.page_count || 1;
-  } catch(e) {}
+  } catch(e) { hideUploadProgress(); }
   splitFile = f;
   document.getElementById('splitFileName').textContent = f.name;
   document.getElementById('splitFileSize').textContent = formatBytes(f.size);
@@ -1206,16 +1221,14 @@ document.getElementById('compressRemoveFile').addEventListener('click', () => {
 
 async function setCompressFile(f) {
   if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
-  // Check encryption
+  showUploadProgress('Uploading & analyzing...');
   const fd0 = new FormData(); fd0.append('file', f);
   try {
-    const r = await fetch('/detect', { method: 'POST', body: fd0 });
+    const r = await fetchWithProgress('/detect', fd0, pct => updateUploadProgress(pct, `Uploading... ${pct}%`));
     const d = await r.json();
-    if (d.is_encrypted) {
-      showStatus('error', '❌ This PDF is password protected. Please unlock it first before compressing.');
-      return;
-    }
-  } catch(e) {}
+    updateUploadProgress(100, 'Upload complete ✓'); hideUploadProgress();
+    if (d.is_encrypted) { showStatus('error', '❌ This PDF is password protected. Please unlock it first before compressing.'); return; }
+  } catch(e) { hideUploadProgress(); }
   compressFile = f;
   document.getElementById('compressFileName').textContent = f.name;
   document.getElementById('compressFileSize').textContent = formatBytes(f.size);
@@ -1317,6 +1330,28 @@ document.getElementById('removeFile').addEventListener('click', ()=>{
   previewPanel.classList.remove('visible');
   selectedMode='image'; status.style.display='none'; updateConvertBtn();
 });
+
+function showUploadProgress(label) {
+  const bar = document.getElementById('uploadProgressShared');
+  const fill = document.getElementById('uploadFillShared');
+  const lbl = document.getElementById('uploadLabelShared');
+  bar.style.display = 'flex';
+  fill.style.width = '0%';
+  lbl.textContent = label || 'Uploading...';
+}
+
+function updateUploadProgress(pct, label) {
+  const fill = document.getElementById('uploadFillShared');
+  const lbl = document.getElementById('uploadLabelShared');
+  fill.style.width = pct + '%';
+  if (label) lbl.textContent = label;
+}
+
+function hideUploadProgress() {
+  setTimeout(() => {
+    document.getElementById('uploadProgressShared').style.display = 'none';
+  }, 800);
+}
 
 function goToUnlock() { setAppMode('unlock'); }
 
@@ -1590,6 +1625,7 @@ document.getElementById('lockRemoveFile').addEventListener('click', () => {
 
 function setLockFile(f) {
   if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
+  showUploadProgress('Uploading...');
   lockFile = f;
   document.getElementById('lockFileName').textContent = f.name;
   document.getElementById('lockFileSize').textContent = formatBytes(f.size);
@@ -1597,6 +1633,7 @@ function setLockFile(f) {
   lockDropZone.style.display = 'none';
   document.getElementById('lockOptions').style.display = 'block';
   lockBtn.disabled = false;
+  updateUploadProgress(100, 'Ready ✓'); hideUploadProgress();
   showPreview(f, 'pdf');
 }
 
@@ -1654,8 +1691,23 @@ document.getElementById('unlockDisclaimer').addEventListener('change', function(
   unlockBtn.disabled = !(unlockFile && this.checked);
 });
 
+// ── fetchWithProgress helper ───────────────────────────────────────────────
+function fetchWithProgress(url, formData, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.upload.addEventListener('progress', e => {
+      if (e.lengthComputable) onProgress(Math.round(e.loaded / e.total * 100));
+    });
+    xhr.onload = () => resolve({ ok: xhr.status < 400, json: () => Promise.resolve(JSON.parse(xhr.responseText)) });
+    xhr.onerror = () => reject(new Error('Network error'));
+    xhr.open('POST', url);
+    xhr.send(formData);
+  });
+}
+
 function setUnlockFile(f) {
   if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
+  showUploadProgress('Uploading...');
   unlockFile = f;
   document.getElementById('unlockFileName').textContent = f.name;
   document.getElementById('unlockFileSize').textContent = formatBytes(f.size);
@@ -1663,6 +1715,7 @@ function setUnlockFile(f) {
   unlockDropZone.style.display = 'none';
   document.getElementById('unlockOptions').style.display = 'block';
   unlockBtn.disabled = !document.getElementById('unlockDisclaimer').checked;
+  updateUploadProgress(100, 'Ready ✓'); hideUploadProgress();
   showPreview(f, 'pdf');
 }
 
