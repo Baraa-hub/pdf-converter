@@ -213,6 +213,18 @@
         </div>
       </div>
       <div class="detect-banner" id="detectBanner"></div>
+
+      <!-- Locked PDF banner -->
+      <div id="lockedBanner" style="display:none; border-radius:12px; padding:16px 18px; margin-bottom:20px; background:#fef2f2; border:1.5px solid #fecaca;">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+          <span style="font-size:22px;">🔐</span>
+          <div>
+            <div style="font-size:15px; font-weight:700; color:#991b1b;">Password Protected PDF</div>
+            <div style="font-size:13px; color:#b91c1c; margin-top:2px;">This PDF is locked. You must unlock it before converting, compressing, merging, or splitting.</div>
+          </div>
+        </div>
+        <button onclick="goToUnlock()" style="width:100%; padding:10px; background:#dc2626; color:white; border:none; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer;">🔓 Go to Unlock PDF</button>
+      </div>
       <div class="page-selector" id="pageSelector" style="display:none; background:#fafafa; border:1.5px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:20px;">
         <p style="font-size:13px; font-weight:700; color:#555; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">Select pages to convert</p>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;">
@@ -818,10 +830,32 @@ mergeFileInput.addEventListener('change', e => { addMergeFiles(e.target.files); 
 
 function addMergeFiles(fileList) {
   Array.from(fileList).forEach(f => {
-    if (f.name.toLowerCase().endsWith('.pdf')) mergeFiles.push(f);
+    if (f.name.toLowerCase().endsWith('.pdf')) {
+      // Quick client-side check: try reading first bytes for encryption marker
+      mergeFiles.push(f);
+    }
   });
   renderMergeList();
   mergeBtn.disabled = mergeFiles.length < 2;
+  // Check for encrypted files
+  checkMergeEncryption();
+}
+
+async function checkMergeEncryption() {
+  for (let i = 0; i < mergeFiles.length; i++) {
+    const fd = new FormData(); fd.append('file', mergeFiles[i]);
+    try {
+      const res = await fetch('/detect', { method: 'POST', body: fd });
+      const d = await res.json();
+      if (d.is_encrypted) {
+        showStatus('error', `❌ "${mergeFiles[i].name}" is password protected. Please unlock it first before merging.`);
+        mergeFiles.splice(i, 1);
+        renderMergeList();
+        mergeBtn.disabled = mergeFiles.length < 2;
+        return;
+      }
+    } catch(e) {}
+  }
 }
 
 function renderMergeList() {
@@ -884,6 +918,17 @@ document.getElementById('splitRemoveFile').addEventListener('click', () => {
 
 async function setSplitFile(f) {
   if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
+  // Check encryption first
+  const fd0 = new FormData(); fd0.append('file', f);
+  try {
+    const r = await fetch('/detect', { method: 'POST', body: fd0 });
+    const d = await r.json();
+    if (d.is_encrypted) {
+      showStatus('error', '❌ This PDF is password protected. Please unlock it first before splitting.');
+      return;
+    }
+    splitPageCount = d.page_count || 1;
+  } catch(e) {}
   splitFile = f;
   document.getElementById('splitFileName').textContent = f.name;
   document.getElementById('splitFileSize').textContent = formatBytes(f.size);
@@ -892,19 +937,9 @@ async function setSplitFile(f) {
   document.getElementById('splitOptions').style.display = 'block';
   splitBtn.disabled = false;
   setSplitType('all');
-  // Get page count
-  const fd = new FormData(); fd.append('file', f);
-  const xhr = new XMLHttpRequest();
-  xhr.onload = function() {
-    try {
-      const d = JSON.parse(xhr.responseText);
-      splitPageCount = d.page_count || 1;
-      document.getElementById('splitPageHint').textContent = `This PDF has ${splitPageCount} pages`;
-      document.getElementById('splitAtHint').textContent = `Enter a page number between 2 and ${splitPageCount}`;
-      document.getElementById('splitAtVal').max = splitPageCount;
-    } catch(e) {}
-  };
-  xhr.open('POST', '/detect'); xhr.send(fd);
+  document.getElementById('splitPageHint').textContent = `This PDF has ${splitPageCount} pages`;
+  document.getElementById('splitAtHint').textContent = `Enter a page number between 2 and ${splitPageCount}`;
+  document.getElementById('splitAtVal').max = splitPageCount;
   showPreview(f, 'pdf');
 }
 
@@ -1014,8 +1049,18 @@ document.getElementById('compressRemoveFile').addEventListener('click', () => {
   previewPanel.classList.remove('visible');
 });
 
-function setCompressFile(f) {
+async function setCompressFile(f) {
   if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
+  // Check encryption
+  const fd0 = new FormData(); fd0.append('file', f);
+  try {
+    const r = await fetch('/detect', { method: 'POST', body: fd0 });
+    const d = await r.json();
+    if (d.is_encrypted) {
+      showStatus('error', '❌ This PDF is password protected. Please unlock it first before compressing.');
+      return;
+    }
+  } catch(e) {}
   compressFile = f;
   document.getElementById('compressFileName').textContent = f.name;
   document.getElementById('compressFileSize').textContent = formatBytes(f.size);
@@ -1111,10 +1156,14 @@ document.getElementById('removeFile').addEventListener('click', ()=>{
   document.getElementById('fileSelected').style.display='none';
   dropZone.style.display='block';
   document.getElementById('detectBanner').style.display='none';
+  document.getElementById('lockedBanner').style.display='none';
   document.getElementById('modeSelector').style.display='none';
+  document.querySelectorAll('#formats .fmt').forEach(e=>{e.style.pointerEvents='';e.style.opacity='';});
   previewPanel.classList.remove('visible');
   selectedMode='image'; status.style.display='none'; updateConvertBtn();
 });
+
+function goToUnlock() { setAppMode('unlock'); }
 
 async function setFile(f) {
   if(!f||!f.name.toLowerCase().endsWith('.pdf')){showStatus('error','⚠️ Please upload a PDF file.');return;}
@@ -1142,7 +1191,25 @@ async function setFile(f) {
   xhr.onload=function(){
     upF.style.width='100%'; upL.textContent='Upload complete ✓';
     setTimeout(()=>{upP.style.display='none';},800);
-    try{const d=JSON.parse(xhr.responseText);pdfType=d.type;pageCount=d.page_count||1;showDetectionBanner(pdfType);checkModeSelector();checkPageSelector();}catch(e){}
+    try {
+      const d = JSON.parse(xhr.responseText);
+      if (d.is_encrypted) {
+        // PDF is locked — show banner, block all actions
+        document.getElementById('lockedBanner').style.display = 'block';
+        document.getElementById('detectBanner').style.display = 'none';
+        document.getElementById('modeSelector').style.display = 'none';
+        document.getElementById('pageSelector').style.display = 'none';
+        document.querySelectorAll('#formats .fmt').forEach(e => { e.style.pointerEvents='none'; e.style.opacity='0.4'; });
+        convertBtn.disabled = true;
+        convertBtn.textContent = '🔐 PDF is locked — unlock it first';
+        return;
+      }
+      // Normal PDF
+      document.getElementById('lockedBanner').style.display = 'none';
+      document.querySelectorAll('#formats .fmt').forEach(e => { e.style.pointerEvents=''; e.style.opacity=''; });
+      pdfType=d.type; pageCount=d.page_count||1;
+      showDetectionBanner(pdfType); checkModeSelector(); checkPageSelector();
+    } catch(e) {}
     updateConvertBtn();
   };
   xhr.onerror=function(){upP.style.display='none';updateConvertBtn();};
