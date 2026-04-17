@@ -188,6 +188,19 @@
     .btn { padding: 14px; font-size: 15px; }
   }
 </style>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {"@type":"Question","name":"Is ieatpdf.com free to use?","acceptedAnswer":{"@type":"Answer","text":"Yes, completely free. No signup, no subscription, no hidden fees. All tools are 100% free."}},
+    {"@type":"Question","name":"Are my files safe and private?","acceptedAnswer":{"@type":"Answer","text":"Yes. Files are processed instantly and permanently deleted immediately after conversion. We never store, share, or access your documents."}},
+    {"@type":"Question","name":"How do I convert a PDF to Word?","acceptedAnswer":{"@type":"Answer","text":"Click Convert PDF, upload your PDF, select DOCX format, choose Image-based or OCR mode, then click Convert. Your Word file downloads instantly."}},
+    {"@type":"Question","name":"What file formats can I convert a PDF to?","acceptedAnswer":{"@type":"Answer","text":"You can convert PDF to Word (DOCX), Excel (XLSX), PowerPoint (PPTX), HTML, JPG, and PNG."}},
+    {"@type":"Question","name":"Is there a file size limit?","acceptedAnswer":{"@type":"Answer","text":"Yes, the maximum file size is 20MB per file. For larger files, try using the Compress tool first."}}
+  ]
+}
+</script>
 <!-- Google Analytics -->
 <script async src="https://www.googletagmanager.com/gtag/js?id=G-JWRNVEV5EN"></script>
 <script>
@@ -530,6 +543,86 @@
       <div class="convert-track"><div class="convert-fill" id="convertFill"></div></div>
     </div>
     <div class="status" id="status"></div>
+
+    <!-- FAQ Section -->
+    <div style="margin-top:28px; border-top:1px solid #f0f0f0; padding-top:24px;">
+      <h2 style="font-size:16px; font-weight:800; color:#111; margin-bottom:16px;">Frequently Asked Questions</h2>
+      <div>
+
+        <div style="margin-bottom:8px; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
+          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
+            Is ieatpdf.com free to use? <span style="font-size:18px; color:#888;">+</span>
+          </button>
+          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
+            Yes, completely free. No signup, no subscription, no hidden fees. All tools — convert, merge, split, compress, lock and unlock — are 100% free.
+          </div>
+        </div>
+
+        <div style="margin-bottom:8px; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
+          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
+            Are my files safe and private? <span style="font-size:18px; color:#888;">+</span>
+          </button>
+          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
+            Yes. Your files are processed instantly and permanently deleted immediately after conversion. We never store, share, or access your documents. No data is retained.
+          </div>
+        </div>
+
+        <div style="margin-bottom:8px; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
+          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
+            How do I convert a PDF to Word? <span style="font-size:18px; color:#888;">+</span>
+          </button>
+          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
+            Click "Convert PDF", upload your PDF, select DOCX format, choose Image-based (perfect layout) or OCR (editable text), then click Convert. Your Word file downloads instantly.
+          </div>
+        </div>
+
+        <div style="margin-bottom:8px; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
+          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
+            What file formats can I convert a PDF to? <span style="font-size:18px; color:#888;">+</span>
+          </button>
+          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
+            You can convert PDF to Word (DOCX), Excel (XLSX), PowerPoint (PPTX), HTML, JPG, and PNG. You can also convert images, Word, Excel and PowerPoint files back to PDF.
+          </div>
+        </div>
+
+        <div style="margin-bottom:8px; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
+          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
+            How do I merge multiple PDF files into one? <span style="font-size:18px; color:#888;">+</span>
+          </button>
+          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
+            Click the "Merge" tab, upload two or more PDF files, then click "Merge PDFs". All files will be combined into one PDF in the order you uploaded them.
+          </div>
+        </div>
+
+        <div style="margin-bottom:8px; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
+          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
+            How much can I compress a PDF? <span style="font-size:18px; color:#888;">+</span>
+          </button>
+          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
+            It depends on the PDF. Image-heavy PDFs can be reduced by up to 80%. Choose Low, Medium, or High compression depending on how much quality you want to keep.
+          </div>
+        </div>
+
+        <div style="margin-bottom:8px; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
+          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
+            Can I convert Arabic or RTL PDFs? <span style="font-size:18px; color:#888;">+</span>
+          </button>
+          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
+            Yes. ieatpdf.com fully supports Arabic, Hebrew, and other right-to-left languages. Use Image-based mode for perfect layout, or OCR mode to extract editable Arabic text.
+          </div>
+        </div>
+
+        <div style="margin-bottom:0; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
+          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
+            Is there a file size limit? <span style="font-size:18px; color:#888;">+</span>
+          </button>
+          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
+            Yes, the maximum file size is 20MB per file. For larger files, try using the Compress tool first to reduce the file size before converting.
+          </div>
+        </div>
+
+      </div>
+    </div>
 
     <div style="margin-top:24px; padding:14px 16px; background:#f0fdf4; border:1.5px solid #86efac; border-radius:12px; display:flex; align-items:flex-start; gap:10px;">
       <span style="font-size:18px; flex-shrink:0;">🔒</span>
@@ -1226,6 +1319,15 @@ document.getElementById('removeFile').addEventListener('click', ()=>{
 });
 
 function goToUnlock() { setAppMode('unlock'); }
+
+function toggleFaq(btn) {
+  const answer = btn.nextElementSibling;
+  const icon = btn.querySelector('span');
+  const isOpen = answer.style.display === 'block';
+  answer.style.display = isOpen ? 'none' : 'block';
+  icon.textContent = isOpen ? '+' : '−';
+  icon.style.color = isOpen ? '#888' : '#4f46e5';
+}
 
 async function setFile(f) {
   if(!f||!f.name.toLowerCase().endsWith('.pdf')){showStatus('error','⚠️ Please upload a PDF file.');return;}
