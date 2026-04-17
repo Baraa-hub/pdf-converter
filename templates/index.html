@@ -993,14 +993,10 @@ mergeFileInput.addEventListener('change', e => { addMergeFiles(e.target.files); 
 
 function addMergeFiles(fileList) {
   Array.from(fileList).forEach(f => {
-    if (f.name.toLowerCase().endsWith('.pdf')) {
-      // Quick client-side check: try reading first bytes for encryption marker
-      mergeFiles.push(f);
-    }
+    if (f.name.toLowerCase().endsWith('.pdf')) mergeFiles.push(f);
   });
   renderMergeList();
-  mergeBtn.disabled = mergeFiles.length < 2;
-  // Check for encrypted files
+  mergeBtn.disabled = true; // Always disabled until all files pass encryption check
   checkMergeEncryption();
 }
 
@@ -1023,6 +1019,7 @@ async function checkMergeEncryption() {
   }
   updateUploadProgress(100, 'Ready ✓');
   hideUploadProgress();
+  mergeBtn.disabled = mergeFiles.length < 2; // Enable only after all checks pass
 }
 
 function renderMergeList() {
@@ -1049,7 +1046,15 @@ function removeMergeFile(idx) {
 
 mergeBtn.addEventListener('click', async () => {
   if (mergeFiles.length < 2) return;
-  mergeBtn.disabled = true; status.style.display = 'none'; startConvertProgress();
+  mergeBtn.disabled = true; status.style.display = 'none';
+  // Show merging progress with custom label
+  document.getElementById('convertProgress').style.display = 'flex';
+  document.getElementById('convertFill').style.width = '0%';
+  document.getElementById('convertLabel').textContent = 'Merging PDFs... please wait ⏳';
+  let pct = 0;
+  convertTimer = setInterval(() => {
+    if (pct < 85) { pct += Math.random() * 8; document.getElementById('convertFill').style.width = Math.min(pct, 85) + '%'; }
+  }, 400);
   const fd = new FormData();
   mergeFiles.forEach(f => fd.append('files', f));
   try {
