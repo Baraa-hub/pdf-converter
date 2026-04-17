@@ -1061,13 +1061,16 @@ def compress_pdf():
         f = request.files.get('file')
         if not f:
             return jsonify({'error': 'No file uploaded'}), 400
-        level = request.form.get('level', 'medium')  # low, medium, high
+        level = request.form.get('level', 'medium')
         f.save(input_path)
         original_size = os.path.getsize(input_path)
 
-        # Use Ghostscript if available, otherwise pypdf
+        # Ghostscript settings — all three actually compress
+        # /prepress = high quality, moderate compression
+        # /ebook = medium quality, good compression
+        # /screen = low quality, maximum compression
         gs_settings = {
-            'low':    '/printer',
+            'low':    '/prepress',
             'medium': '/ebook',
             'high':   '/screen',
         }
@@ -1092,7 +1095,15 @@ def compress_pdf():
                 writer.write(out)
 
         compressed_size = os.path.getsize(output_path)
-        reduction = round((1 - compressed_size / original_size) * 100, 1)
+
+        # Always return the smaller file — never inflate
+        if compressed_size >= original_size:
+            import shutil
+            shutil.copy2(input_path, output_path)
+            compressed_size = original_size
+            reduction = 0.0
+        else:
+            reduction = round((1 - compressed_size / original_size) * 100, 1)
 
         response = send_file(output_path, as_attachment=True,
                            download_name='compressed.pdf')
