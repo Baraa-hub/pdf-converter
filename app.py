@@ -858,6 +858,14 @@ def parse_pages(pages_param, total):
 def index():
     return render_template('index.html')
 
+@app.route('/sitemap.xml')
+def sitemap():
+    return send_file('sitemap.xml', mimetype='application/xml')
+
+@app.route('/robots.txt')
+def robots():
+    return send_file('robots.txt', mimetype='text/plain')
+
 @app.route('/privacy')
 def privacy():
     return render_template('privacy.html')
