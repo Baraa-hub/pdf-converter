@@ -451,7 +451,7 @@
           <div id="compressLow" onclick="setCompressLevel('low')" style="border:1.5px solid #e5e7eb; border-radius:10px; padding:12px 8px; cursor:pointer; background:white; text-align:center;">
             <span style="font-size:18px; display:block; margin-bottom:4px;">🟢</span>
             <span style="font-size:13px; font-weight:700; color:#333; display:block;">Low</span>
-            <span style="font-size:11px; color:#888;">Better quality</span>
+            <span style="font-size:11px; color:#888;">Best quality</span>
           </div>
           <div id="compressMedium" onclick="setCompressLevel('medium')" style="border:1.5px solid #6366f1; border-radius:10px; padding:12px 8px; cursor:pointer; background:#eef2ff; text-align:center;">
             <span style="font-size:18px; display:block; margin-bottom:4px;">🟡</span>
@@ -461,7 +461,7 @@
           <div id="compressHigh" onclick="setCompressLevel('high')" style="border:1.5px solid #e5e7eb; border-radius:10px; padding:12px 8px; cursor:pointer; background:white; text-align:center;">
             <span style="font-size:18px; display:block; margin-bottom:4px;">🔴</span>
             <span style="font-size:13px; font-weight:700; color:#333; display:block;">High</span>
-            <span style="font-size:11px; color:#888;">Smaller size</span>
+            <span style="font-size:11px; color:#888;">Smallest size</span>
           </div>
         </div>
       </div>
@@ -1255,7 +1255,7 @@ compressBtn.addEventListener('click', async () => {
     finishConvertProgress(true);
     const msg = reduction > 0
       ? `✅ Done! Reduced from ${formatBytes(origSize)} to ${formatBytes(compSize)} (${reduction}% smaller)`
-      : `✅ Done! File downloaded.`;
+      : `✅ Done! This PDF is already optimized — no further compression possible.`;
     showStatus('success', msg);
   } catch(e) { finishConvertProgress(false); showStatus('error', '❌ Something went wrong.'); }
   finally { compressBtn.disabled = false; }
