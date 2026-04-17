@@ -1211,13 +1211,24 @@ def detect():
     file.save(input_path)
     try:
         from pypdf import PdfReader
-        reader = PdfReader(input_path)
-        if reader.is_encrypted:
+        from pypdf.errors import PdfReadError
+        try:
+            reader = PdfReader(input_path)
+            is_encrypted = reader.is_encrypted
+        except PdfReadError:
+            is_encrypted = True
+        except Exception:
+            is_encrypted = False
+
+        if is_encrypted:
             return jsonify({'type': 'unknown', 'uid': uid, 'page_count': 0, 'is_encrypted': True})
+
         pdf_type = detect_pdf_type(input_path)
         with pdfplumber.open(input_path) as pdf:
             page_count = len(pdf.pages)
         return jsonify({'type': pdf_type, 'uid': uid, 'page_count': page_count, 'is_encrypted': False})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
     finally:
         try:
             if os.path.exists(input_path): os.remove(input_path)
