@@ -38,9 +38,9 @@
   .card { background: white; border-radius: 20px; padding: 44px; max-width: 600px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.10); flex-shrink: 0; }
 
   /* Mode Toggle */
-  .mode-toggle-wrap { display: flex; align-items: center; justify-content: center; margin-bottom: 28px; }
-  .mode-toggle { display: flex; background: #f0f2f5; border-radius: 12px; padding: 4px; gap: 4px; flex-wrap: wrap; justify-content: center; }
-  .mode-toggle-btn { padding: 9px 20px; border: none; border-radius: 9px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: transparent; color: #888; }
+  .mode-toggle-wrap { display: flex; align-items: center; justify-content: center; margin-bottom: 28px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .mode-toggle { display: flex; background: #f0f2f5; border-radius: 12px; padding: 4px; gap: 3px; flex-shrink: 0; }
+  .mode-toggle-btn { padding: 7px 11px; border: none; border-radius: 9px; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: transparent; color: #888; white-space: nowrap; }
   .mode-toggle-btn.active { background: white; color: #4f46e5; box-shadow: 0 2px 8px rgba(0,0,0,0.10); }
 
   .logo-row { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
@@ -449,6 +449,9 @@
       </div>
       <button class="btn" id="unlockBtn" disabled>🔓 Unlock PDF</button>
     </div>
+
+    <!-- Shared progress + status -->
+    <div class="convert-progress" id="convertProgress">
       <div class="convert-progress-label" id="convertLabel">Converting... please wait</div>
       <div class="convert-track"><div class="convert-fill" id="convertFill"></div></div>
     </div>
