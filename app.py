@@ -1209,10 +1209,19 @@ def detect():
     uid = str(uuid.uuid4())[:8]
     input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
     file.save(input_path)
-    pdf_type = detect_pdf_type(input_path)
-    with pdfplumber.open(input_path) as pdf:
-        page_count = len(pdf.pages)
-    return jsonify({'type': pdf_type, 'uid': uid, 'page_count': page_count})
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(input_path)
+        if reader.is_encrypted:
+            return jsonify({'type': 'unknown', 'uid': uid, 'page_count': 0, 'is_encrypted': True})
+        pdf_type = detect_pdf_type(input_path)
+        with pdfplumber.open(input_path) as pdf:
+            page_count = len(pdf.pages)
+        return jsonify({'type': pdf_type, 'uid': uid, 'page_count': page_count, 'is_encrypted': False})
+    finally:
+        try:
+            if os.path.exists(input_path): os.remove(input_path)
+        except: pass
 
 @app.route('/preview-pptx', methods=['POST'])
 def preview_pptx():
