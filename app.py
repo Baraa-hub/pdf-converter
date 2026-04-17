@@ -1065,23 +1065,64 @@ def compress_pdf():
         f.save(input_path)
         original_size = os.path.getsize(input_path)
 
-        # Ghostscript settings — all three actually compress
-        # /prepress = high quality, moderate compression
-        # /ebook = medium quality, good compression
-        # /screen = low quality, maximum compression
-        gs_settings = {
+        # Ghostscript settings with explicit image downsampling
+        # This is what makes the difference vs tools like ilovepdf
+        gs_image_settings = {
+            'low': [
+                '-dColorImageResolution=150',
+                '-dGrayImageResolution=150',
+                '-dMonoImageResolution=300',
+                '-dColorImageDownsampleType=/Bicubic',
+                '-dGrayImageDownsampleType=/Bicubic',
+                '-dDownsampleColorImages=true',
+                '-dDownsampleGrayImages=true',
+                '-dColorImageFilter=/DCTEncode',
+                '-dGrayImageFilter=/DCTEncode',
+                '-dAutoFilterColorImages=false',
+                '-dAutoFilterGrayImages=false',
+            ],
+            'medium': [
+                '-dColorImageResolution=120',
+                '-dGrayImageResolution=120',
+                '-dMonoImageResolution=200',
+                '-dColorImageDownsampleType=/Bicubic',
+                '-dGrayImageDownsampleType=/Bicubic',
+                '-dDownsampleColorImages=true',
+                '-dDownsampleGrayImages=true',
+                '-dColorImageFilter=/DCTEncode',
+                '-dGrayImageFilter=/DCTEncode',
+                '-dAutoFilterColorImages=false',
+                '-dAutoFilterGrayImages=false',
+            ],
+            'high': [
+                '-dColorImageResolution=72',
+                '-dGrayImageResolution=72',
+                '-dMonoImageResolution=150',
+                '-dColorImageDownsampleType=/Bicubic',
+                '-dGrayImageDownsampleType=/Bicubic',
+                '-dDownsampleColorImages=true',
+                '-dDownsampleGrayImages=true',
+                '-dColorImageFilter=/DCTEncode',
+                '-dGrayImageFilter=/DCTEncode',
+                '-dAutoFilterColorImages=false',
+                '-dAutoFilterGrayImages=false',
+            ],
+        }
+        gs_pdf_settings = {
             'low':    '/prepress',
             'medium': '/ebook',
             'high':   '/screen',
         }
-        gs_setting = gs_settings.get(level, '/ebook')
+        gs_setting = gs_pdf_settings.get(level, '/ebook')
+        extra_args = gs_image_settings.get(level, [])
 
         gs_result = subprocess.run([
             'gs', '-sDEVICE=pdfwrite', '-dCompatibilityLevel=1.4',
             f'-dPDFSETTINGS={gs_setting}',
             '-dNOPAUSE', '-dQUIET', '-dBATCH',
+        ] + extra_args + [
             f'-sOutputFile={output_path}', input_path
-        ], capture_output=True, timeout=120)
+        ], capture_output=True, timeout=300)
 
         if gs_result.returncode != 0 or not os.path.exists(output_path):
             # Fallback: pypdf compression
