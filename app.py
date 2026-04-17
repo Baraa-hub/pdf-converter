@@ -52,6 +52,16 @@ def fix_rtl(line):
     from bidi.algorithm import get_display
     return get_display(line)
 
+def fix_arabic_for_docx(line):
+    """For Word docs: reshape Arabic letters to connect them, but don't
+    apply bidi display transform — Word handles RTL direction natively."""
+    try:
+        import arabic_reshaper
+        line = arabic_reshaper.reshape(line)
+    except:
+        pass
+    return line
+
 def clean_text(text):
     if not text:
         return ''
@@ -80,24 +90,45 @@ def save_image_file(img, path, save_fmt):
 
 def save_as_docx_images(images, output_path, uid):
     from docx import Document
-    from docx.shared import Inches, Emu
+    from docx.shared import Inches, Pt, Emu
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    import lxml.etree as etree
+
     doc = Document()
-    # Set zero margins so full-page images don't overflow and create blank pages
-    for section in doc.sections:
-        section.top_margin = Inches(0)
-        section.bottom_margin = Inches(0)
-        section.left_margin = Inches(0)
-        section.right_margin = Inches(0)
+
     for i, img in enumerate(images):
         img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
         save_image_file(img, img_path, 'PNG')
-        if i > 0:
-            doc.add_page_break()
-        # Fit image to page width while preserving aspect ratio
         w_px, h_px = img.size
-        page_w = Inches(8.27)  # A4 width
-        page_h = Emu(int(page_w * h_px / w_px))
-        doc.add_picture(img_path, width=page_w, height=page_h)
+
+        # Use current section for first page, add new section for subsequent pages
+        if i == 0:
+            section = doc.sections[0]
+        else:
+            # Add continuous section break then switch to new page section
+            new_section = doc.add_section()
+            section = doc.sections[-1]
+
+        # Set page size exactly to image dimensions (at 96 DPI → EMU)
+        # 1 inch = 914400 EMU, image rendered at ~100dpi
+        dpi = 100
+        page_w_emu = int(w_px / dpi * 914400)
+        page_h_emu = int(h_px / dpi * 914400)
+        section.page_width = Emu(page_w_emu)
+        section.page_height = Emu(page_h_emu)
+        section.top_margin = Emu(0)
+        section.bottom_margin = Emu(0)
+        section.left_margin = Emu(0)
+        section.right_margin = Emu(0)
+
+        # Add the image paragraph
+        para = doc.add_paragraph()
+        para.paragraph_format.space_before = Pt(0)
+        para.paragraph_format.space_after = Pt(0)
+        run = para.add_run()
+        run.add_picture(img_path, width=Emu(page_w_emu), height=Emu(page_h_emu))
+
     doc.save(output_path)
 
 def save_as_pptx_images(images, output_path, uid):
@@ -624,7 +655,7 @@ def save_as_docx_text(input_path, output_path, pages_param=None):
                         para = doc.add_paragraph()
                         rtl = is_rtl_text(line)
                         if rtl:
-                            line = fix_rtl(line)
+                            line = fix_arabic_for_docx(line)
                             apply_rtl_to_paragraph(para)
                         run = para.add_run(line)
                         run.font.size = Pt(11)
