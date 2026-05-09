@@ -874,6 +874,34 @@ def google_verify():
 def privacy():
     return render_template('privacy.html')
 
+@app.route('/compress-pdf')
+def page_compress():
+    return render_template('index.html', initial_mode='compress')
+
+@app.route('/merge-pdf')
+def page_merge():
+    return render_template('index.html', initial_mode='merge')
+
+@app.route('/split-pdf')
+def page_split():
+    return render_template('index.html', initial_mode='split')
+
+@app.route('/lock-pdf')
+def page_lock():
+    return render_template('index.html', initial_mode='lock')
+
+@app.route('/unlock-pdf')
+def page_unlock():
+    return render_template('index.html', initial_mode='unlock')
+
+@app.route('/pdf-to-word')
+def page_pdf_to_word():
+    return render_template('index.html', initial_mode='from-pdf')
+
+@app.route('/pdf-to-jpg')
+def page_pdf_to_jpg():
+    return render_template('index.html', initial_mode='from-pdf')
+
 # ── Merge PDFs ──────────────────────────────────────────────────────────────
 @app.route('/merge', methods=['POST'])
 def merge_pdfs():
