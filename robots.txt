@@ -1,5 +1,12 @@
 User-agent: *
 Allow: /
+Allow: /compress-pdf
+Allow: /merge-pdf
+Allow: /split-pdf
+Allow: /lock-pdf
+Allow: /unlock-pdf
+Allow: /pdf-to-word
+Allow: /pdf-to-jpg
 Disallow: /convert
 Disallow: /detect
 Disallow: /merge
@@ -9,5 +16,6 @@ Disallow: /lock
 Disallow: /unlock
 Disallow: /convert-to-pdf
 Disallow: /preview-pptx
+Disallow: /debug
 
 Sitemap: https://ieatpdf.com/sitemap.xml
