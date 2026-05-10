@@ -1454,6 +1454,7 @@ async function finalizeCrop(rect) {
     cap.width  = vp.width;
     cap.height = vp.height;
     const capCtx = cap.getContext('2d');
+    capCtx.imageSmoothingEnabled = false;
     capCtx.fillStyle = '#ffffff';
     capCtx.fillRect(0, 0, cap.width, cap.height);
     await page.render({ canvasContext: capCtx, viewport: vp }).promise;
@@ -1468,7 +1469,9 @@ async function finalizeCrop(rect) {
     const region = document.createElement('canvas');
     region.width  = cW;
     region.height = cH;
-    region.getContext('2d').drawImage(cap, cL, cT, cW, cH, 0, 0, cW, cH);
+    const regionCtx = region.getContext('2d');
+    regionCtx.imageSmoothingEnabled = false;
+    regionCtx.drawImage(cap, cL, cT, cW, cH, 0, 0, cW, cH);
 
     // Place white rectangle behind where it was
     const whiteBox = new fabric.Rect({
@@ -1481,24 +1484,30 @@ async function finalizeCrop(rect) {
     fabricCanvas.add(whiteBox);
     fabricCanvas.renderAll();
 
-    // Place cropped image — scaleX/Y = 1 because it's already at canvas pixel size
+    // Place cropped image — use width/height NOT scaleX/scaleY to avoid Fabric blur
+    // Set imageSmoothing false to prevent bilinear interpolation pixelation
     const dataUrl = region.toDataURL('image/png');
     const imgEl = new Image();
     imgEl.onload = () => {
       const fabImg = new fabric.Image(imgEl, {
         left, top,
+        width: cW,
+        height: cH,
         scaleX: 1,
         scaleY: 1,
+        imageSmoothing: false,
         selectable: true,
         evented: true,
+        hasBorders: false,
+        hasControls: false,
+        objectCaching: false,
       });
       fabricCanvas.add(fabImg);
-      // Deselect immediately so no selection handles/border show
       fabricCanvas.discardActiveObject();
       fabricCanvas.renderAll();
       pushUndo();
       saveCurrentPageState();
-      showToast('Done — select it to move!', 'success');
+      showToast('Done — select to move!', 'success');
     };
     imgEl.src = dataUrl;
 
