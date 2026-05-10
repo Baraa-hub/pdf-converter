@@ -1442,44 +1442,105 @@ async function finalizeCrop(rect) {
     return;
   }
 
-  // Step 1: Remove dashed selection rect BEFORE capture so it's not included
+  // Remove dashed selection rect immediately
   fabricCanvas.remove(rect);
   cropRect = null;
   fabricCanvas.renderAll();
 
-  // Step 2: Capture region at HIGH resolution (2x for crisp quality)
-  const dataUrl = fabricCanvas.toDataURL({
-    format: 'png',
-    left: left,
-    top: top,
-    width: width,
-    height: height,
-    multiplier: 2,
-  });
+  // --- HIGH QUALITY CAPTURE ---
+  // Render the PDF page at 4x scale to a hidden canvas
+  // This gives us full PDF quality, completely independent of screen zoom
+  const HIGH_RES_SCALE = 4;
+  const page = await pdfDoc.getPage(currentPage);
+  const hiViewport = page.getViewport({ scale: HIGH_RES_SCALE });
 
-  // Step 3: White out original area
-  const whiteRect = new fabric.Rect({
-    left: left,
-    top: top,
-    width: width,
-    height: height,
-    fill: '#ffffff',
-    stroke: null,
-    strokeWidth: 0,
-    selectable: false,
-    evented: false,
+  const hiCanvas = document.createElement('canvas');
+  hiCanvas.width = hiViewport.width;
+  hiCanvas.height = hiViewport.height;
+  const hiCtx = hiCanvas.getContext('2d');
+  await page.render({ canvasContext: hiCtx, viewport: hiViewport }).promise;
+
+  // The fabric canvas is rendered at 1.5 * zoomLevel
+  // Map canvas coords → hi-res PDF coords
+  const canvasScale = 1.5 * zoomLevel;
+  const coordScale = HIGH_RES_SCALE / canvasScale;
+
+  const hiLeft   = Math.floor(left   * coordScale);
+  const hiTop    = Math.floor(top    * coordScale);
+  const hiWidth  = Math.ceil(width   * coordScale);
+  const hiHeight = Math.ceil(height  * coordScale);
+
+  // Also composite any Fabric objects (annotations, text etc) that fall in this region
+  // onto the hi-res canvas at the same scale
+  const objCanvas = document.createElement('canvas');
+  objCanvas.width = hiViewport.width;
+  objCanvas.height = hiViewport.height;
+  const objCtx = objCanvas.getContext('2d');
+
+  // Draw fabric objects scaled up to hi-res
+  const tempFab = new fabric.StaticCanvas(null, {
+    width: hiViewport.width,
+    height: hiViewport.height,
+  });
+  const objScaleFactor = HIGH_RES_SCALE / canvasScale;
+  const currentObjects = fabricCanvas.getObjects()
+    .filter(o => o !== fabricCanvas.backgroundImage)
+    .map(o => o.toObject());
+
+  if (currentObjects.length > 0) {
+    await new Promise(resolve => {
+      fabric.util.enlivenObjects(currentObjects, (objs) => {
+        objs.forEach(o => {
+          o.scaleX = (o.scaleX || 1) * objScaleFactor;
+          o.scaleY = (o.scaleY || 1) * objScaleFactor;
+          o.left = (o.left || 0) * objScaleFactor;
+          o.top  = (o.top  || 0) * objScaleFactor;
+          o.setCoords && o.setCoords();
+          tempFab.add(o);
+        });
+        tempFab.renderAll();
+        resolve();
+      });
+    });
+    hiCtx.drawImage(tempFab.getElement(), 0, 0);
+  }
+
+  // Crop the exact region from the hi-res canvas
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width  = hiWidth;
+  cropCanvas.height = hiHeight;
+  const cropCtx = cropCanvas.getContext('2d');
+  cropCtx.drawImage(hiCanvas, hiLeft, hiTop, hiWidth, hiHeight, 0, 0, hiWidth, hiHeight);
+  const dataUrl = cropCanvas.toDataURL('image/png');
+
+  // Sample background color at the crop region for the eraser
+  const bgCtx2 = document.createElement('canvas');
+  bgCtx2.width = 1; bgCtx2.height = 1;
+  const s = bgCtx2.getContext('2d');
+  s.drawImage(hiCanvas, hiLeft, hiTop, hiWidth, hiHeight, 0, 0, 1, 1);
+  const px = s.getImageData(0, 0, 1, 1).data;
+  const bgColor = `rgb(${px[0]},${px[1]},${px[2]})`;
+
+  // Cover original area with sampled background color
+  const eraser = new fabric.Rect({
+    left: left, top: top,
+    width: width, height: height,
+    fill: bgColor,
+    stroke: null, strokeWidth: 0,
+    selectable: false, evented: false,
     isWhiteout: true,
   });
-  fabricCanvas.add(whiteRect);
+  fabricCanvas.add(eraser);
   fabricCanvas.renderAll();
 
-  // Step 4: Place captured image back at same position, moveable
+  // Place the high-quality cropped image, scaled back to canvas size
   fabric.Image.fromURL(dataUrl, (img) => {
+    // Scale the hi-res image down to match the original canvas region size exactly
     img.set({
       left: left,
       top: top,
-      scaleX: 0.5,
-      scaleY: 0.5,
+      scaleX: width  / hiWidth,
+      scaleY: height / hiHeight,
       selectable: true,
       evented: true,
     });
@@ -1488,7 +1549,7 @@ async function finalizeCrop(rect) {
     fabricCanvas.renderAll();
     pushUndo();
     saveCurrentPageState();
-    showToast('Region cut — drag it anywhere!', 'success');
+    showToast('Region cut at full quality — drag it anywhere!', 'success');
   });
 
   setTool('select');
