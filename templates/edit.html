@@ -609,7 +609,7 @@ input[type="file"] { display: none; }
   </div>
   <div class="tool-group">
     <span class="tool-label">Text Layer</span>
-    <button class="tool-btn" id="toolExtractText" title="Detect & edit real PDF text" onclick="extractPdfText()" style="font-size:11px;font-weight:700;">PDF→Text</button>
+    <button class="tool-btn" id="toolExtractText" title="Detect & edit real PDF text" onclick="extractPdfText()" style="width:auto;padding:0 8px;font-size:10px;font-weight:700;letter-spacing:0.02em;white-space:nowrap;">PDF→Text</button>
   </div>
   <div class="tool-group">
     <span class="tool-label">Edit</span>
@@ -930,9 +930,11 @@ async function renderPageThumbnail(pageNum) {
 async function renderAllThumbnails() {
   const list = document.getElementById('pagesList');
   list.innerHTML = '';
+
+  // First pass: create all placeholder wrappers immediately
   for (let i = 1; i <= totalPages; i++) {
     const wrap = document.createElement('div');
-    wrap.className = 'page-thumb' + (i === 1 ? ' active' : '');
+    wrap.className = 'page-thumb' + (i === currentPage ? ' active' : '');
     wrap.dataset.page = i;
     wrap.onclick = () => switchToPage(i);
 
@@ -941,19 +943,39 @@ async function renderAllThumbnails() {
     delBtn.textContent = '✕';
     delBtn.onclick = (e) => { e.stopPropagation(); deletePageByIndex(i - 1); };
 
+    // Placeholder grey box while rendering
+    const placeholder = document.createElement('div');
+    placeholder.style.cssText = 'width:100%;height:120px;background:#2c2e33;border-radius:4px 4px 0 0;';
+    placeholder.dataset.placeholder = '1';
+
     const label = document.createElement('div');
     label.className = 'page-thumb-label';
     label.textContent = i;
 
     wrap.appendChild(delBtn);
+    wrap.appendChild(placeholder);
     wrap.appendChild(label);
     list.appendChild(wrap);
+  }
 
-    // Render async
-    renderPageThumbnail(i).then(tc => {
-      tc.style.borderRadius = '4px 4px 0 0';
-      wrap.insertBefore(tc, label);
-    });
+  // Second pass: render each page thumbnail, replacing placeholder
+  for (let i = 1; i <= totalPages; i++) {
+    try {
+      const tc = await renderPageThumbnail(i);
+      tc.style.cssText = 'display:block;width:100%;height:auto;border-radius:4px 4px 0 0;';
+
+      const thumbs = list.querySelectorAll('.page-thumb');
+      if (thumbs[i - 1]) {
+        const ph = thumbs[i - 1].querySelector('[data-placeholder]');
+        if (ph) ph.replaceWith(tc);
+        else {
+          const oldCanvas = thumbs[i - 1].querySelector('canvas');
+          if (oldCanvas) oldCanvas.replaceWith(tc);
+        }
+      }
+    } catch(e) {
+      console.warn('Thumbnail render failed for page', i, e);
+    }
   }
 }
 
@@ -1420,29 +1442,53 @@ async function finalizeCrop(rect) {
     return;
   }
 
-  // Capture the region from the canvas as an image
+  // Step 1: Remove dashed selection rect BEFORE capture so it's not included
+  fabricCanvas.remove(rect);
+  cropRect = null;
+  fabricCanvas.renderAll();
+
+  // Step 2: Capture region at HIGH resolution (2x for crisp quality)
   const dataUrl = fabricCanvas.toDataURL({
     format: 'png',
     left: left,
     top: top,
     width: width,
     height: height,
-    multiplier: 1,
+    multiplier: 2,
   });
 
-  // Remove the crop selection rect
-  fabricCanvas.remove(rect);
-  cropRect = null;
+  // Step 3: White out original area
+  const whiteRect = new fabric.Rect({
+    left: left,
+    top: top,
+    width: width,
+    height: height,
+    fill: '#ffffff',
+    stroke: null,
+    strokeWidth: 0,
+    selectable: false,
+    evented: false,
+    isWhiteout: true,
+  });
+  fabricCanvas.add(whiteRect);
+  fabricCanvas.renderAll();
 
-  // Add captured region as a moveable image on the canvas
+  // Step 4: Place captured image back at same position, moveable
   fabric.Image.fromURL(dataUrl, (img) => {
-    img.set({ left, top, selectable: true, evented: true });
+    img.set({
+      left: left,
+      top: top,
+      scaleX: 0.5,
+      scaleY: 0.5,
+      selectable: true,
+      evented: true,
+    });
     fabricCanvas.add(img);
     fabricCanvas.setActiveObject(img);
     fabricCanvas.renderAll();
     pushUndo();
     saveCurrentPageState();
-    showToast('Region captured — drag it anywhere!', 'success');
+    showToast('Region cut — drag it anywhere!', 'success');
   });
 
   setTool('select');
@@ -1466,37 +1512,53 @@ async function extractPdfText() {
       body: formData,
     });
 
-    if (!res.ok) throw new Error('Server error: ' + res.status);
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || 'Server error ' + res.status);
+    }
     const data = await res.json();
 
+    if (data.error) throw new Error(data.error);
+
     if (!data.blocks || data.blocks.length === 0) {
-      showToast('No selectable text found on this page (may be image-based)', 'error');
+      showToast('No selectable text found on this page (image-based PDF)', 'error');
       return;
     }
 
-    // Get current canvas scale vs PDF original size
+    // Get the PDF page's natural dimensions (unscaled)
     const page = await pdfDoc.getPage(currentPage);
-    const origViewport = page.getViewport({ scale: 1.0 });
-    const scaleX = fabricCanvas.width / origViewport.width;
-    const scaleY = fabricCanvas.height / origViewport.height;
+    const naturalViewport = page.getViewport({ scale: 1.0 });
+    const pdfNaturalW = naturalViewport.width;
+    const pdfNaturalH = naturalViewport.height;
+
+    // Canvas is rendered at scale 1.5 * zoomLevel
+    // So canvas px / pdf natural px = renderScale
+    const renderScale = (1.5 * zoomLevel);
+    const canvasW = fabricCanvas.width;
+    const canvasH = fabricCanvas.height;
+
+    // Actual scale factors (account for any small float differences)
+    const scaleX = canvasW / pdfNaturalW;
+    const scaleY = canvasH / pdfNaturalH;
 
     let added = 0;
     for (const block of data.blocks) {
       if (!block.text || !block.text.trim()) continue;
 
-      // PDF coords: origin bottom-left → canvas origin top-left
+      // PDF coords: y=0 is BOTTOM of page → flip to canvas top-left origin
       const x = block.x * scaleX;
-      const y = (origViewport.height - block.y - block.h) * scaleY;
-      const fontSize = Math.max(8, Math.round((block.size || 12) * scaleY));
+      const y = (pdfNaturalH - block.y - block.h) * scaleY;
+      const fontSize = Math.max(8, Math.round(block.size * scaleY));
 
       const itext = new fabric.IText(block.text, {
         left: x,
         top: y,
-        fontFamily: block.font || 'Arial',
+        fontFamily: 'Arial',
         fontSize: fontSize,
         fill: block.color || '#000000',
         editable: true,
-        backgroundColor: 'transparent',
+        hasBackground: false,
+        padding: 0,
         isExtractedText: true,
       });
 
@@ -1507,10 +1569,10 @@ async function extractPdfText() {
     fabricCanvas.renderAll();
     pushUndo();
     saveCurrentPageState();
-    showToast(added + ' text block(s) added — click any to edit!', 'success');
+    showToast(added + ' text block' + (added !== 1 ? 's' : '') + ' — click any to edit!', 'success');
   } catch(err) {
-    console.error(err);
-    showToast('Text extraction failed: ' + err.message, 'error');
+    console.error('extractPdfText error:', err);
+    showToast('Error: ' + err.message, 'error');
   } finally {
     hideLoading();
   }
