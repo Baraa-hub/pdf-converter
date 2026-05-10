@@ -1434,7 +1434,7 @@ async function finalizeCrop(rect) {
   const width  = rect.width;
   const height = rect.height;
 
-  // Remove crop selection rect FIRST before any rendering
+  // Remove crop selection rect FIRST
   fabricCanvas.getObjects().filter(o => o.isCropRect).forEach(o => fabricCanvas.remove(o));
   fabricCanvas.remove(rect);
   cropRect = null;
@@ -1447,61 +1447,58 @@ async function finalizeCrop(rect) {
   try {
     const page = await pdfDoc.getPage(currentPage);
 
-    // Render at 3x for crisp capture
-    const SCALE = 3;
-    const vp = page.getViewport({ scale: SCALE });
+    // Render at EXACT canvas display scale — no scaling up/down = no pixelation
+    const displayScale = 1.5 * zoomLevel;
+    const vp = page.getViewport({ scale: displayScale });
     const cap = document.createElement('canvas');
-    cap.width = vp.width;
+    cap.width  = vp.width;
     cap.height = vp.height;
     const capCtx = cap.getContext('2d');
     capCtx.fillStyle = '#ffffff';
     capCtx.fillRect(0, 0, cap.width, cap.height);
     await page.render({ canvasContext: capCtx, viewport: vp }).promise;
 
-    // Map canvas coords → 3x coords
-    const displayScale = 1.5 * zoomLevel;
-    const ratio = SCALE / displayScale;
-    const cL = Math.max(0, Math.floor(left   * ratio));
-    const cT = Math.max(0, Math.floor(top    * ratio));
-    const cW = Math.min(Math.ceil(width  * ratio), cap.width  - cL);
-    const cH = Math.min(Math.ceil(height * ratio), cap.height - cT);
+    // Crop coords are already in canvas space — use directly, no mapping needed
+    const cL = Math.max(0, Math.floor(left));
+    const cT = Math.max(0, Math.floor(top));
+    const cW = Math.min(Math.ceil(width),  cap.width  - cL);
+    const cH = Math.min(Math.ceil(height), cap.height - cT);
 
-    // Extract the region
+    // Extract region at exact canvas pixel size — 1:1, no scaling
     const region = document.createElement('canvas');
-    region.width = cW;
+    region.width  = cW;
     region.height = cH;
     region.getContext('2d').drawImage(cap, cL, cT, cW, cH, 0, 0, cW, cH);
 
-    // Step 1: Put a WHITE rectangle where the region was — simple, clean
+    // Place white rectangle behind where it was
     const whiteBox = new fabric.Rect({
       left, top, width, height,
       fill: '#ffffff',
-      stroke: null,
-      strokeWidth: 0,
-      selectable: false,
-      evented: false,
+      stroke: null, strokeWidth: 0,
+      selectable: false, evented: false,
       isWhiteout: true,
     });
     fabricCanvas.add(whiteBox);
     fabricCanvas.renderAll();
 
-    // Step 2: Place the cropped piece as a moveable image on top
+    // Place cropped image — scaleX/Y = 1 because it's already at canvas pixel size
     const dataUrl = region.toDataURL('image/png');
     const imgEl = new Image();
     imgEl.onload = () => {
       const fabImg = new fabric.Image(imgEl, {
         left, top,
-        scaleX: width  / cW,
-        scaleY: height / cH,
+        scaleX: 1,
+        scaleY: 1,
         selectable: true,
         evented: true,
       });
       fabricCanvas.add(fabImg);
-      fabricCanvas.setActiveObject(fabImg);
+      // Deselect immediately so no selection handles/border show
+      fabricCanvas.discardActiveObject();
       fabricCanvas.renderAll();
       pushUndo();
       saveCurrentPageState();
-      showToast('Done — drag it anywhere!', 'success');
+      showToast('Done — select it to move!', 'success');
     };
     imgEl.src = dataUrl;
 
