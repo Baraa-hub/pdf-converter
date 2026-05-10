@@ -1436,124 +1436,108 @@ async function finalizeCrop(rect) {
   const height = rect.height;
 
   if (width < 10 || height < 10) {
+    fabricCanvas.getObjects().filter(o => o.isCropRect).forEach(o => fabricCanvas.remove(o));
     fabricCanvas.remove(rect);
     cropRect = null;
     setTool('select');
     return;
   }
 
-  // Remove dashed selection rect immediately — also nuke any stale crop rects
-  fabricCanvas.getObjects().filter(o => o.isCropRect).forEach(o => fabricCanvas.remove(o));
-  fabricCanvas.remove(rect);
-  cropRect = null;
-  fabricCanvas.renderAll();
+  showLoading('Cutting region...');
 
-  // --- HIGH QUALITY CAPTURE ---
-  // Render the PDF page at 4x scale to a hidden canvas
-  // This gives us full PDF quality, completely independent of screen zoom
-  const HIGH_RES_SCALE = 4;
-  const page = await pdfDoc.getPage(currentPage);
-  const hiViewport = page.getViewport({ scale: HIGH_RES_SCALE });
-
-  const hiCanvas = document.createElement('canvas');
-  hiCanvas.width = hiViewport.width;
-  hiCanvas.height = hiViewport.height;
-  const hiCtx = hiCanvas.getContext('2d');
-  await page.render({ canvasContext: hiCtx, viewport: hiViewport }).promise;
-
-  // The fabric canvas is rendered at 1.5 * zoomLevel
-  // Map canvas coords → hi-res PDF coords
-  const canvasScale = 1.5 * zoomLevel;
-  const coordScale = HIGH_RES_SCALE / canvasScale;
-
-  const hiLeft   = Math.floor(left   * coordScale);
-  const hiTop    = Math.floor(top    * coordScale);
-  const hiWidth  = Math.ceil(width   * coordScale);
-  const hiHeight = Math.ceil(height  * coordScale);
-
-  // Also composite any Fabric objects (annotations, text etc) that fall in this region
-  // onto the hi-res canvas at the same scale
-  const objCanvas = document.createElement('canvas');
-  objCanvas.width = hiViewport.width;
-  objCanvas.height = hiViewport.height;
-  const objCtx = objCanvas.getContext('2d');
-
-  // Draw fabric objects scaled up to hi-res
-  const tempFab = new fabric.StaticCanvas(null, {
-    width: hiViewport.width,
-    height: hiViewport.height,
-  });
-  const objScaleFactor = HIGH_RES_SCALE / canvasScale;
-  const currentObjects = fabricCanvas.getObjects()
-    .filter(o => o !== fabricCanvas.backgroundImage)
-    .map(o => o.toObject());
-
-  if (currentObjects.length > 0) {
-    await new Promise(resolve => {
-      fabric.util.enlivenObjects(currentObjects, (objs) => {
-        objs.forEach(o => {
-          o.scaleX = (o.scaleX || 1) * objScaleFactor;
-          o.scaleY = (o.scaleY || 1) * objScaleFactor;
-          o.left = (o.left || 0) * objScaleFactor;
-          o.top  = (o.top  || 0) * objScaleFactor;
-          o.setCoords && o.setCoords();
-          tempFab.add(o);
-        });
-        tempFab.renderAll();
-        resolve();
-      });
-    });
-    hiCtx.drawImage(tempFab.getElement(), 0, 0);
-  }
-
-  // Crop the exact region from the hi-res canvas
-  const cropCanvas = document.createElement('canvas');
-  cropCanvas.width  = hiWidth;
-  cropCanvas.height = hiHeight;
-  const cropCtx = cropCanvas.getContext('2d');
-  cropCtx.drawImage(hiCanvas, hiLeft, hiTop, hiWidth, hiHeight, 0, 0, hiWidth, hiHeight);
-  const dataUrl = cropCanvas.toDataURL('image/png');
-
-  // Sample background color at the crop region for the eraser
-  const bgCtx2 = document.createElement('canvas');
-  bgCtx2.width = 1; bgCtx2.height = 1;
-  const s = bgCtx2.getContext('2d');
-  s.drawImage(hiCanvas, hiLeft, hiTop, hiWidth, hiHeight, 0, 0, 1, 1);
-  const px = s.getImageData(0, 0, 1, 1).data;
-  const bgColor = `rgb(${px[0]},${px[1]},${px[2]})`;
-
-  // Cover original area with sampled background color
-  const eraser = new fabric.Rect({
-    left: left, top: top,
-    width: width, height: height,
-    fill: bgColor,
-    stroke: null, strokeWidth: 0,
-    selectable: false, evented: false,
-    isWhiteout: true,
-  });
-  fabricCanvas.add(eraser);
-  fabricCanvas.renderAll();
-
-  // Place the high-quality cropped image, scaled back to canvas size
-  fabric.Image.fromURL(dataUrl, (img) => {
-    // Scale the hi-res image down to match the original canvas region size exactly
-    img.set({
-      left: left,
-      top: top,
-      scaleX: width  / hiWidth,
-      scaleY: height / hiHeight,
-      selectable: true,
-      evented: true,
-    });
-    fabricCanvas.add(img);
-    fabricCanvas.setActiveObject(img);
+  try {
+    // Remove ALL crop rects from canvas before any capture
+    fabricCanvas.getObjects().filter(o => o.isCropRect).forEach(o => fabricCanvas.remove(o));
+    fabricCanvas.remove(rect);
+    cropRect = null;
+    fabricCanvas.discardActiveObject();
     fabricCanvas.renderAll();
-    pushUndo();
-    saveCurrentPageState();
-    showToast('Region cut at full quality — drag it anywhere!', 'success');
-  });
 
-  setTool('select');
+    // Render PDF page at 4x — full quality source
+    const HIGH_RES_SCALE = 4;
+    const page = await pdfDoc.getPage(currentPage);
+    const hiViewport = page.getViewport({ scale: HIGH_RES_SCALE });
+
+    const hiCanvas = document.createElement('canvas');
+    hiCanvas.width = hiViewport.width;
+    hiCanvas.height = hiViewport.height;
+    const hiCtx = hiCanvas.getContext('2d');
+    // Fill white first to avoid black background on transparent areas
+    hiCtx.fillStyle = '#ffffff';
+    hiCtx.fillRect(0, 0, hiCanvas.width, hiCanvas.height);
+    await page.render({ canvasContext: hiCtx, viewport: hiViewport }).promise;
+
+    // Map canvas coords → hi-res coords
+    const canvasScale = 1.5 * zoomLevel;
+    const coordScale  = HIGH_RES_SCALE / canvasScale;
+    const hiLeft   = Math.max(0, Math.floor(left   * coordScale));
+    const hiTop    = Math.max(0, Math.floor(top    * coordScale));
+    const hiWidth  = Math.min(Math.ceil(width  * coordScale), hiCanvas.width  - hiLeft);
+    const hiHeight = Math.min(Math.ceil(height * coordScale), hiCanvas.height - hiTop);
+
+    // Extract the region
+    const cropCanvas = document.createElement('canvas');
+    cropCanvas.width  = hiWidth;
+    cropCanvas.height = hiHeight;
+    const cropCtx = cropCanvas.getContext('2d');
+    // White base to prevent any black bleed
+    cropCtx.fillStyle = '#ffffff';
+    cropCtx.fillRect(0, 0, hiWidth, hiHeight);
+    cropCtx.drawImage(hiCanvas, hiLeft, hiTop, hiWidth, hiHeight, 0, 0, hiWidth, hiHeight);
+
+    // Sample average background color for the eraser
+    const sampleCtx = document.createElement('canvas');
+    sampleCtx.width = 4; sampleCtx.height = 4;
+    const sc = sampleCtx.getContext('2d');
+    sc.drawImage(hiCanvas, hiLeft, hiTop, hiWidth, hiHeight, 0, 0, 4, 4);
+    const px = sc.getImageData(0, 0, 4, 4).data;
+    let r=0, g=0, b=0;
+    for (let i=0; i<px.length; i+=4) { r+=px[i]; g+=px[i+1]; b+=px[i+2]; }
+    const n = px.length/4;
+    const bgColor = `rgb(${Math.round(r/n)},${Math.round(g/n)},${Math.round(b/n)})`;
+
+    // Cover original area with sampled bg color — no border, no selection handles
+    const eraser = new fabric.Rect({
+      left, top, width, height,
+      fill: bgColor,
+      stroke: null, strokeWidth: 0,
+      selectable: false, evented: false,
+      hasBorders: false, hasControls: false,
+      isWhiteout: true,
+    });
+    fabricCanvas.add(eraser);
+
+    // Convert cropCanvas to dataURL and create fabric image properly
+    // Use an actual HTMLImageElement to avoid Fabric's black-bg bug with data URLs
+    const dataUrl = cropCanvas.toDataURL('image/png');
+    const imgEl = new Image();
+    imgEl.onload = () => {
+      const fabImg = new fabric.Image(imgEl, {
+        left,
+        top,
+        scaleX: width  / hiWidth,
+        scaleY: height / hiHeight,
+        selectable: true,
+        evented: true,
+        hasBorders: true,
+        hasControls: true,
+      });
+      fabricCanvas.add(fabImg);
+      fabricCanvas.setActiveObject(fabImg);
+      fabricCanvas.renderAll();
+      pushUndo();
+      saveCurrentPageState();
+      showToast('Region cut — drag it anywhere!', 'success');
+    };
+    imgEl.src = dataUrl;
+
+  } catch(err) {
+    console.error('Crop error:', err);
+    showToast('Crop failed: ' + err.message, 'error');
+  } finally {
+    hideLoading();
+    setTool('select');
+  }
 }
 
 // ── EXTRACT REAL PDF TEXT ────────────────────────────────────────────────────
