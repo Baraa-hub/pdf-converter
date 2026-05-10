@@ -885,9 +885,12 @@ def extract_text_blocks():
         f = request.files.get('file')
         page_num = int(request.form.get('page', 1)) - 1  # 0-indexed
         if not f:
-            return jsonify({'error': 'No file'}), 400
+            return jsonify({'error': 'No file uploaded'}), 400
 
         pdf_bytes = f.read()
+        if not pdf_bytes:
+            return jsonify({'error': 'Empty file'}), 400
+
         doc = fitz.open(stream=pdf_bytes, filetype='pdf')
 
         if page_num >= len(doc):
@@ -896,9 +899,11 @@ def extract_text_blocks():
         page = doc[page_num]
         blocks = []
 
-        # Extract text with position, font, size, color
-        for block in page.get_text('rawdict', flags=fitz.TEXT_PRESERVE_WHITESPACE)['blocks']:
-            if block.get('type') != 0:  # type 0 = text
+        # Use 'dict' (not rawdict) — more reliable across PyMuPDF versions
+        text_dict = page.get_text('dict')
+
+        for block in text_dict.get('blocks', []):
+            if block.get('type') != 0:  # 0 = text block
                 continue
             for line in block.get('lines', []):
                 for span in line.get('spans', []):
@@ -906,28 +911,37 @@ def extract_text_blocks():
                     if not text:
                         continue
                     bbox = span.get('bbox', [0, 0, 0, 0])
-                    # Convert color int to hex
-                    color_int = span.get('color', 0)
-                    r = (color_int >> 16) & 0xFF
-                    g = (color_int >> 8) & 0xFF
-                    b = color_int & 0xFF
+
+                    # Color: PyMuPDF returns int (RGB packed) or tuple
+                    raw_color = span.get('color', 0)
+                    if isinstance(raw_color, (list, tuple)):
+                        r = int(raw_color[0] * 255) if raw_color[0] <= 1 else int(raw_color[0])
+                        g = int(raw_color[1] * 255) if len(raw_color) > 1 and raw_color[1] <= 1 else 0
+                        b = int(raw_color[2] * 255) if len(raw_color) > 2 and raw_color[2] <= 1 else 0
+                    else:
+                        color_int = int(raw_color)
+                        r = (color_int >> 16) & 0xFF
+                        g = (color_int >> 8) & 0xFF
+                        b = color_int & 0xFF
+
                     hex_color = '#{:02x}{:02x}{:02x}'.format(r, g, b)
 
                     blocks.append({
                         'text': text,
-                        'x': bbox[0],
-                        'y': bbox[1],
-                        'w': bbox[2] - bbox[0],
-                        'h': bbox[3] - bbox[1],
-                        'size': span.get('size', 12),
+                        'x': round(bbox[0], 2),
+                        'y': round(bbox[1], 2),
+                        'w': round(bbox[2] - bbox[0], 2),
+                        'h': round(bbox[3] - bbox[1], 2),
+                        'size': round(span.get('size', 12), 2),
                         'font': span.get('font', 'Arial'),
                         'color': hex_color,
                     })
 
         doc.close()
-        return jsonify({'blocks': blocks})
+        return jsonify({'blocks': blocks, 'count': len(blocks)})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        import traceback
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
 
 # ── Merge PDFs ──────────────────────────────────────────────────────────────
 @app.route('/merge', methods=['POST'])
