@@ -1070,8 +1070,8 @@ function saveCurrentPageState() {
   const idx = currentPage - 1;
   if (idx < 0 || idx >= pageData.length) return;
   const objects = fabricCanvas.getObjects()
-    .filter(o => o !== fabricCanvas.backgroundImage)
-    .map(o => o.toObject(['excludeFromExport']));
+    .filter(o => o !== fabricCanvas.backgroundImage && !o.isCropRect)
+    .map(o => o.toObject(['excludeFromExport', 'isCropRect', 'isWhiteout', 'isTextEraser', 'isExtractedText']));
   pageData[idx].objects = objects;
 }
 
@@ -1442,7 +1442,8 @@ async function finalizeCrop(rect) {
     return;
   }
 
-  // Remove dashed selection rect immediately
+  // Remove dashed selection rect immediately — also nuke any stale crop rects
+  fabricCanvas.getObjects().filter(o => o.isCropRect).forEach(o => fabricCanvas.remove(o));
   fabricCanvas.remove(rect);
   cropRect = null;
   fabricCanvas.renderAll();
@@ -2073,7 +2074,8 @@ async function exportPDF() {
 
       await new Promise(resolve => {
         fabric.util.enlivenObjects(pd.objects, (objs) => {
-          objs.forEach(o => tempFab.add(o));
+          // Never render crop selection marks into the exported PDF
+          objs.filter(o => !o.isCropRect).forEach(o => tempFab.add(o));
           tempFab.renderAll();
           resolve();
         });
