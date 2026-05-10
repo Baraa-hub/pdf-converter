@@ -1538,15 +1538,67 @@ async function extractPdfText() {
     const scaleX = canvasW / pdfNaturalW;
     const scaleY = canvasH / pdfNaturalH;
 
+    // Render the raw PDF page to a hidden canvas so we can sample background colors
+    const bgCanvas = document.createElement('canvas');
+    bgCanvas.width = canvasW;
+    bgCanvas.height = canvasH;
+    const bgCtx = bgCanvas.getContext('2d');
+    const rawViewport = page.getViewport({ scale: 1.5 * zoomLevel });
+    await page.render({ canvasContext: bgCtx, viewport: rawViewport }).promise;
+
+    // Helper: sample the most common color in a region of the bg canvas
+    function sampleBgColor(x, y, w, h) {
+      const px = Math.max(0, Math.floor(x));
+      const py = Math.max(0, Math.floor(y));
+      const pw = Math.max(1, Math.min(Math.floor(w), bgCanvas.width - px));
+      const ph = Math.max(1, Math.min(Math.floor(h), bgCanvas.height - py));
+      if (pw <= 0 || ph <= 0) return '#ffffff';
+      try {
+        const data = bgCtx.getImageData(px, py, pw, ph).data;
+        // Average the RGB values across the sampled region
+        let r = 0, g = 0, b = 0, count = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          r += data[i]; g += data[i+1]; b += data[i+2]; count++;
+        }
+        if (count === 0) return '#ffffff';
+        r = Math.round(r / count);
+        g = Math.round(g / count);
+        b = Math.round(b / count);
+        return `rgb(${r},${g},${b})`;
+      } catch(e) {
+        return '#ffffff';
+      }
+    }
+
     let added = 0;
     for (const block of data.blocks) {
       if (!block.text || !block.text.trim()) continue;
 
-      // PyMuPDF 'dict' mode: Y=0 is TOP-LEFT (same as canvas) — NO flipping needed
       const x = block.x * scaleX;
       const y = block.y * scaleY;
+      const w = block.w * scaleX;
+      const h = block.h * scaleY;
       const fontSize = Math.max(6, Math.round(block.size * scaleY));
 
+      // Sample exact background color behind this text block
+      const bgColor = sampleBgColor(x, y, w, h);
+
+      // Place a background-colored rectangle to erase original text
+      const eraser = new fabric.Rect({
+        left: x,
+        top: y,
+        width: w,
+        height: h + 2,
+        fill: bgColor,
+        stroke: null,
+        strokeWidth: 0,
+        selectable: false,
+        evented: false,
+        isTextEraser: true,
+      });
+      fabricCanvas.add(eraser);
+
+      // Place editable text on top
       const itext = new fabric.IText(block.text, {
         left: x,
         top: y,
