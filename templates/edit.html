@@ -1531,13 +1531,10 @@ async function extractPdfText() {
     const pdfNaturalW = naturalViewport.width;
     const pdfNaturalH = naturalViewport.height;
 
-    // Canvas is rendered at scale 1.5 * zoomLevel
-    // So canvas px / pdf natural px = renderScale
-    const renderScale = (1.5 * zoomLevel);
     const canvasW = fabricCanvas.width;
     const canvasH = fabricCanvas.height;
 
-    // Actual scale factors (account for any small float differences)
+    // Scale factors: how many canvas pixels per PDF point
     const scaleX = canvasW / pdfNaturalW;
     const scaleY = canvasH / pdfNaturalH;
 
@@ -1545,10 +1542,10 @@ async function extractPdfText() {
     for (const block of data.blocks) {
       if (!block.text || !block.text.trim()) continue;
 
-      // PDF coords: y=0 is BOTTOM of page → flip to canvas top-left origin
+      // PyMuPDF 'dict' mode: Y=0 is TOP-LEFT (same as canvas) — NO flipping needed
       const x = block.x * scaleX;
-      const y = (pdfNaturalH - block.y - block.h) * scaleY;
-      const fontSize = Math.max(8, Math.round(block.size * scaleY));
+      const y = block.y * scaleY;
+      const fontSize = Math.max(6, Math.round(block.size * scaleY));
 
       const itext = new fabric.IText(block.text, {
         left: x,
@@ -1557,7 +1554,6 @@ async function extractPdfText() {
         fontSize: fontSize,
         fill: block.color || '#000000',
         editable: true,
-        hasBackground: false,
         padding: 0,
         isExtractedText: true,
       });
