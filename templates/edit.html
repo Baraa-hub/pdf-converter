@@ -87,7 +87,12 @@ body {
   font-size: 14px;
   font-weight: 500;
   padding: 4px 8px;
-  min-width: 180px;
+  min-width: 80px;
+  max-width: 300px;
+  width: auto;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transition: border-color 0.15s;
 }
 .filename-input:hover { border-color: var(--border); }
@@ -596,7 +601,15 @@ input[type="file"] { display: none; }
   <div class="tool-group">
     <span class="tool-label">Annotate</span>
     <button class="tool-btn" id="toolHighlight" title="Highlight" onclick="setTool('highlight')" style="color:#f59f00;">▬</button>
-    <button class="tool-btn" id="toolArrow" title="Arrow" onclick="setTool('arrow')">→</button>
+    <button class="tool-btn" id="toolArrow" title="Arrow (with arrowhead)" onclick="setTool('arrow')">→</button>
+  </div>
+  <div class="tool-group">
+    <span class="tool-label">Crop</span>
+    <button class="tool-btn" id="toolCrop" title="Crop & Move region" onclick="setTool('crop')">⊡</button>
+  </div>
+  <div class="tool-group">
+    <span class="tool-label">Text Layer</span>
+    <button class="tool-btn" id="toolExtractText" title="Detect & edit real PDF text" onclick="extractPdfText()" style="font-size:11px;font-weight:700;">PDF→Text</button>
   </div>
   <div class="tool-group">
     <span class="tool-label">Edit</span>
@@ -1122,6 +1135,9 @@ function setTool(tool) {
   fabricCanvas.selection = true;
   wrap.classList.remove('drawing', 'text-mode');
 
+  // Cancel any active crop
+  if (tool !== 'crop') cancelCrop();
+
   if (tool === 'select') {
     fabricCanvas.defaultCursor = 'default';
   } else if (tool === 'draw') {
@@ -1140,6 +1156,11 @@ function setTool(tool) {
     fabricCanvas.freeDrawingBrush.color = 'rgba(255,220,0,0.4)';
     fabricCanvas.freeDrawingBrush.width = 18;
     wrap.classList.add('drawing');
+  } else if (tool === 'crop') {
+    fabricCanvas.selection = false;
+    fabricCanvas.defaultCursor = 'crosshair';
+    wrap.classList.add('drawing');
+    showToast('Draw a box around the area to crop & move', '');
   }
 
   document.getElementById('statusTool').textContent =
@@ -1176,7 +1197,7 @@ function setupCanvasEvents() {
       return;
     }
 
-    if (['rect', 'circle', 'line', 'arrow'].includes(currentTool)) {
+    if (['rect', 'circle', 'line', 'arrow', 'crop'].includes(currentTool)) {
       isDrawingShape = true;
       shapeStartX = pointer.x;
       shapeStartY = pointer.y;
@@ -1191,22 +1212,33 @@ function setupCanvasEvents() {
     updateShapeDrawing(pointer);
   });
 
-  fabricCanvas.on('mouse:up', () => {
+  fabricCanvas.on('mouse:up', (opt) => {
     if (isDrawingShape) {
       isDrawingShape = false;
       fabricCanvas.selection = true;
       if (activeShape) {
-        const w = activeShape.width || activeShape.getScaledWidth();
-        const h = activeShape.height || activeShape.getScaledHeight();
+        const w = activeShape.width || Math.abs((activeShape.x2||0) - (activeShape.x1||0));
+        const h = activeShape.height || Math.abs((activeShape.y2||0) - (activeShape.y1||0));
         if (Math.abs(w) < 5 && Math.abs(h) < 5) {
           fabricCanvas.remove(activeShape);
+          activeShape = null;
+          setTool('select');
+          return;
+        }
+
+        if (currentTool === 'arrow') {
+          // Build proper arrow with arrowhead triangle
+          finalizeArrow();
+        } else if (currentTool === 'crop') {
+          // Capture region and allow moving
+          finalizeCrop(activeShape);
         } else {
           pushUndo();
           saveCurrentPageState();
         }
         activeShape = null;
       }
-      setTool('select');
+      if (currentTool !== 'crop') setTool('select');
     }
   });
 
@@ -1261,11 +1293,30 @@ function startShapeDrawing(pointer) {
     activeShape = new fabric.Rect({ ...opts, width: 0, height: 0 });
   } else if (currentTool === 'circle') {
     activeShape = new fabric.Ellipse({ ...opts, rx: 0, ry: 0 });
-  } else if (currentTool === 'line' || currentTool === 'arrow') {
+  } else if (currentTool === 'line') {
     activeShape = new fabric.Line(
       [pointer.x, pointer.y, pointer.x, pointer.y],
       { stroke: color, strokeWidth: strokeW, selectable: true }
     );
+  } else if (currentTool === 'arrow') {
+    // Arrow = line + triangle head, built as a group after mouse:up
+    activeShape = new fabric.Line(
+      [pointer.x, pointer.y, pointer.x, pointer.y],
+      { stroke: color, strokeWidth: strokeW, selectable: false, evented: false }
+    );
+  } else if (currentTool === 'crop') {
+    activeShape = new fabric.Rect({
+      left: pointer.x, top: pointer.y,
+      width: 0, height: 0,
+      stroke: '#4f46e5',
+      strokeWidth: 2,
+      strokeDashArray: [6, 4],
+      fill: 'rgba(79,70,229,0.08)',
+      selectable: false,
+      evented: false,
+      excludeFromExport: true,
+      isCropRect: true,
+    });
   }
 
   if (activeShape) fabricCanvas.add(activeShape);
@@ -1276,7 +1327,7 @@ function updateShapeDrawing(pointer) {
   const dx = pointer.x - shapeStartX;
   const dy = pointer.y - shapeStartY;
 
-  if (currentTool === 'rect') {
+  if (currentTool === 'rect' || currentTool === 'crop') {
     if (dx < 0) activeShape.set({ left: pointer.x, width: Math.abs(dx) });
     else activeShape.set({ width: dx });
     if (dy < 0) activeShape.set({ top: pointer.y, height: Math.abs(dy) });
@@ -1291,15 +1342,178 @@ function updateShapeDrawing(pointer) {
     });
   } else if (currentTool === 'line' || currentTool === 'arrow') {
     activeShape.set({ x2: pointer.x, y2: pointer.y });
-    if (currentTool === 'arrow') drawArrowhead(activeShape, pointer);
   }
 
   fabricCanvas.renderAll();
 }
 
-function drawArrowhead(line, endPt) {
-  // Simple arrow using angle
-  line.set({ x2: endPt.x, y2: endPt.y });
+function finalizeArrow() {
+  if (!activeShape) return;
+  const x1 = activeShape.x1, y1 = activeShape.y1;
+  const x2 = activeShape.x2, y2 = activeShape.y2;
+  const color = activeShape.stroke;
+  const strokeW = activeShape.strokeWidth;
+
+  fabricCanvas.remove(activeShape);
+
+  // Angle of the line
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  const headLen = Math.max(12, strokeW * 4);
+
+  // Arrowhead triangle points
+  const tx = x2 - headLen * Math.cos(angle);
+  const ty = y2 - headLen * Math.sin(angle);
+
+  const line = new fabric.Line([x1, y1, tx, ty], {
+    stroke: color, strokeWidth: strokeW, selectable: false, evented: false,
+  });
+
+  const arrowHead = new fabric.Triangle({
+    left: x2,
+    top: y2,
+    width: headLen,
+    height: headLen,
+    fill: color,
+    stroke: color,
+    strokeWidth: 1,
+    angle: (angle * 180 / Math.PI) + 90,
+    originX: 'center',
+    originY: 'center',
+    selectable: false,
+    evented: false,
+  });
+
+  const group = new fabric.Group([line, arrowHead], {
+    selectable: true,
+    evented: true,
+  });
+
+  fabricCanvas.add(group);
+  fabricCanvas.setActiveObject(group);
+  fabricCanvas.renderAll();
+  pushUndo();
+  saveCurrentPageState();
+  setTool('select');
+}
+
+// ── CROP TOOL ────────────────────────────────────────────────────────────────
+let cropRect = null;
+
+function cancelCrop() {
+  if (cropRect) {
+    fabricCanvas.remove(cropRect);
+    cropRect = null;
+  }
+}
+
+async function finalizeCrop(rect) {
+  cropRect = rect;
+  const left = rect.left;
+  const top = rect.top;
+  const width = rect.width;
+  const height = rect.height;
+
+  if (width < 10 || height < 10) {
+    fabricCanvas.remove(rect);
+    cropRect = null;
+    setTool('select');
+    return;
+  }
+
+  // Capture the region from the canvas as an image
+  const dataUrl = fabricCanvas.toDataURL({
+    format: 'png',
+    left: left,
+    top: top,
+    width: width,
+    height: height,
+    multiplier: 1,
+  });
+
+  // Remove the crop selection rect
+  fabricCanvas.remove(rect);
+  cropRect = null;
+
+  // Add captured region as a moveable image on the canvas
+  fabric.Image.fromURL(dataUrl, (img) => {
+    img.set({ left, top, selectable: true, evented: true });
+    fabricCanvas.add(img);
+    fabricCanvas.setActiveObject(img);
+    fabricCanvas.renderAll();
+    pushUndo();
+    saveCurrentPageState();
+    showToast('Region captured — drag it anywhere!', 'success');
+  });
+
+  setTool('select');
+}
+
+// ── EXTRACT REAL PDF TEXT ────────────────────────────────────────────────────
+async function extractPdfText() {
+  if (!pdfDoc || !originalPdfBytes) {
+    showToast('Open a PDF first', 'error');
+    return;
+  }
+  showLoading('Detecting text in PDF...');
+  try {
+    const formData = new FormData();
+    const blob = new Blob([originalPdfBytes], { type: 'application/pdf' });
+    formData.append('file', blob, 'document.pdf');
+    formData.append('page', currentPage);
+
+    const res = await fetch('/extract-text-blocks', {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!res.ok) throw new Error('Server error: ' + res.status);
+    const data = await res.json();
+
+    if (!data.blocks || data.blocks.length === 0) {
+      showToast('No selectable text found on this page (may be image-based)', 'error');
+      return;
+    }
+
+    // Get current canvas scale vs PDF original size
+    const page = await pdfDoc.getPage(currentPage);
+    const origViewport = page.getViewport({ scale: 1.0 });
+    const scaleX = fabricCanvas.width / origViewport.width;
+    const scaleY = fabricCanvas.height / origViewport.height;
+
+    let added = 0;
+    for (const block of data.blocks) {
+      if (!block.text || !block.text.trim()) continue;
+
+      // PDF coords: origin bottom-left → canvas origin top-left
+      const x = block.x * scaleX;
+      const y = (origViewport.height - block.y - block.h) * scaleY;
+      const fontSize = Math.max(8, Math.round((block.size || 12) * scaleY));
+
+      const itext = new fabric.IText(block.text, {
+        left: x,
+        top: y,
+        fontFamily: block.font || 'Arial',
+        fontSize: fontSize,
+        fill: block.color || '#000000',
+        editable: true,
+        backgroundColor: 'transparent',
+        isExtractedText: true,
+      });
+
+      fabricCanvas.add(itext);
+      added++;
+    }
+
+    fabricCanvas.renderAll();
+    pushUndo();
+    saveCurrentPageState();
+    showToast(added + ' text block(s) added — click any to edit!', 'success');
+  } catch(err) {
+    console.error(err);
+    showToast('Text extraction failed: ' + err.message, 'error');
+  } finally {
+    hideLoading();
+  }
 }
 
 // ── TEXT ─────────────────────────────────────────────────────────────────────
