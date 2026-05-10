@@ -1447,33 +1447,36 @@ async function finalizeCrop(rect) {
   try {
     const page = await pdfDoc.getPage(currentPage);
 
-    // Render at EXACT canvas display scale — no scaling up/down = no pixelation
+    // Capture at 2x display scale for retina-quality sharpness
     const displayScale = 1.5 * zoomLevel;
-    const vp = page.getViewport({ scale: displayScale });
+    const OVERSAMPLE = 2;
+    const vp = page.getViewport({ scale: displayScale * OVERSAMPLE });
     const cap = document.createElement('canvas');
     cap.width  = vp.width;
     cap.height = vp.height;
     const capCtx = cap.getContext('2d');
-    capCtx.imageSmoothingEnabled = false;
+    capCtx.imageSmoothingEnabled = true;
+    capCtx.imageSmoothingQuality = 'high';
     capCtx.fillStyle = '#ffffff';
     capCtx.fillRect(0, 0, cap.width, cap.height);
     await page.render({ canvasContext: capCtx, viewport: vp }).promise;
 
-    // Crop coords are already in canvas space — use directly, no mapping needed
-    const cL = Math.max(0, Math.floor(left));
-    const cT = Math.max(0, Math.floor(top));
-    const cW = Math.min(Math.ceil(width),  cap.width  - cL);
-    const cH = Math.min(Math.ceil(height), cap.height - cT);
+    // Scale crop coords up by OVERSAMPLE to match hi-res canvas
+    const cL = Math.max(0, Math.floor(left   * OVERSAMPLE));
+    const cT = Math.max(0, Math.floor(top    * OVERSAMPLE));
+    const cW = Math.min(Math.ceil(width  * OVERSAMPLE), cap.width  - cL);
+    const cH = Math.min(Math.ceil(height * OVERSAMPLE), cap.height - cT);
 
-    // Extract region at exact canvas pixel size — 1:1, no scaling
+    // Extract region at 2x resolution into its own canvas
     const region = document.createElement('canvas');
     region.width  = cW;
     region.height = cH;
     const regionCtx = region.getContext('2d');
-    regionCtx.imageSmoothingEnabled = false;
+    regionCtx.imageSmoothingEnabled = true;
+    regionCtx.imageSmoothingQuality = 'high';
     regionCtx.drawImage(cap, cL, cT, cW, cH, 0, 0, cW, cH);
 
-    // Place white rectangle behind where it was
+    // White box behind original position
     const whiteBox = new fabric.Rect({
       left, top, width, height,
       fill: '#ffffff',
@@ -1484,32 +1487,29 @@ async function finalizeCrop(rect) {
     fabricCanvas.add(whiteBox);
     fabricCanvas.renderAll();
 
-    // Place cropped image — use width/height NOT scaleX/scaleY to avoid Fabric blur
-    // Set imageSmoothing false to prevent bilinear interpolation pixelation
-    const dataUrl = region.toDataURL('image/png');
-    const imgEl = new Image();
-    imgEl.onload = () => {
-      const fabImg = new fabric.Image(imgEl, {
-        left, top,
-        width: cW,
-        height: cH,
-        scaleX: 1,
-        scaleY: 1,
-        imageSmoothing: false,
-        selectable: true,
-        evented: true,
-        hasBorders: false,
-        hasControls: false,
-        objectCaching: false,
-      });
-      fabricCanvas.add(fabImg);
-      fabricCanvas.discardActiveObject();
-      fabricCanvas.renderAll();
-      pushUndo();
-      saveCurrentPageState();
-      showToast('Done — select to move!', 'success');
-    };
-    imgEl.src = dataUrl;
+    // Pass canvas element DIRECTLY to fabric.Image — zero compression loss
+    // scaleX/Y = 1/OVERSAMPLE brings it back to canvas display size
+    const fabImg = new fabric.Image(region, {
+      left, top,
+      scaleX: 1 / OVERSAMPLE,
+      scaleY: 1 / OVERSAMPLE,
+      imageSmoothing: true,
+      selectable: true,
+      evented: true,
+      hasBorders: false,
+      hasControls: false,
+      borderColor: 'transparent',
+      cornerColor: 'transparent',
+      borderScaleFactor: 0,
+      padding: 0,
+      objectCaching: false,
+    });
+    fabricCanvas.add(fabImg);
+    fabricCanvas.discardActiveObject();
+    fabricCanvas.renderAll();
+    pushUndo();
+    saveCurrentPageState();
+    showToast('Done — select to move!', 'success');
 
   } catch(err) {
     console.error(err);
