@@ -1281,8 +1281,22 @@ function setupCanvasEvents() {
   });
 
   // Selection changed → update props panel
-  fabricCanvas.on('selection:created', updatePropsPanel);
-  fabricCanvas.on('selection:updated', updatePropsPanel);
+  fabricCanvas.on('selection:created', (e) => {
+    if (e.selected && e.selected.some(o => o.isWhiteout || o.isCropRect)) {
+      fabricCanvas.discardActiveObject();
+      fabricCanvas.renderAll();
+      return;
+    }
+    updatePropsPanel();
+  });
+  fabricCanvas.on('selection:updated', (e) => {
+    if (e.selected && e.selected.some(o => o.isWhiteout || o.isCropRect)) {
+      fabricCanvas.discardActiveObject();
+      fabricCanvas.renderAll();
+      return;
+    }
+    updatePropsPanel();
+  });
   fabricCanvas.on('selection:cleared', () => {
     showNoSelection();
     document.getElementById('statusSelection').style.display = 'none';
@@ -1449,7 +1463,7 @@ async function finalizeCrop(rect) {
 
     // Capture at 2x display scale for retina-quality sharpness
     const displayScale = 1.5 * zoomLevel;
-    const OVERSAMPLE = 2;
+    const OVERSAMPLE = 4;
     const vp = page.getViewport({ scale: displayScale * OVERSAMPLE });
     const cap = document.createElement('canvas');
     cap.width  = vp.width;
@@ -1480,10 +1494,18 @@ async function finalizeCrop(rect) {
     const whiteBox = new fabric.Rect({
       left, top, width, height,
       fill: '#ffffff',
-      stroke: null, strokeWidth: 0,
-      selectable: false, evented: false,
+      stroke: null,
+      strokeWidth: 0,
+      selectable: false,
+      evented: false,
+      hasControls: false,
+      hasBorders: false,
+      hoverCursor: 'default',
+      lockMovementX: true,
+      lockMovementY: true,
       isWhiteout: true,
     });
+    whiteBox.on('selected', () => fabricCanvas.discardActiveObject());
     fabricCanvas.add(whiteBox);
     fabricCanvas.renderAll();
 
