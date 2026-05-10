@@ -878,6 +878,57 @@ def privacy():
 def page_edit():
     return render_template('edit.html')
 
+@app.route('/extract-text-blocks', methods=['POST'])
+def extract_text_blocks():
+    import fitz  # PyMuPDF
+    try:
+        f = request.files.get('file')
+        page_num = int(request.form.get('page', 1)) - 1  # 0-indexed
+        if not f:
+            return jsonify({'error': 'No file'}), 400
+
+        pdf_bytes = f.read()
+        doc = fitz.open(stream=pdf_bytes, filetype='pdf')
+
+        if page_num >= len(doc):
+            return jsonify({'error': 'Page out of range'}), 400
+
+        page = doc[page_num]
+        blocks = []
+
+        # Extract text with position, font, size, color
+        for block in page.get_text('rawdict', flags=fitz.TEXT_PRESERVE_WHITESPACE)['blocks']:
+            if block.get('type') != 0:  # type 0 = text
+                continue
+            for line in block.get('lines', []):
+                for span in line.get('spans', []):
+                    text = span.get('text', '').strip()
+                    if not text:
+                        continue
+                    bbox = span.get('bbox', [0, 0, 0, 0])
+                    # Convert color int to hex
+                    color_int = span.get('color', 0)
+                    r = (color_int >> 16) & 0xFF
+                    g = (color_int >> 8) & 0xFF
+                    b = color_int & 0xFF
+                    hex_color = '#{:02x}{:02x}{:02x}'.format(r, g, b)
+
+                    blocks.append({
+                        'text': text,
+                        'x': bbox[0],
+                        'y': bbox[1],
+                        'w': bbox[2] - bbox[0],
+                        'h': bbox[3] - bbox[1],
+                        'size': span.get('size', 12),
+                        'font': span.get('font', 'Arial'),
+                        'color': hex_color,
+                    })
+
+        doc.close()
+        return jsonify({'blocks': blocks})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # ── Merge PDFs ──────────────────────────────────────────────────────────────
 @app.route('/merge', methods=['POST'])
 def merge_pdfs():
