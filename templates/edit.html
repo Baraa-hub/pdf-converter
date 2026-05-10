@@ -1434,7 +1434,7 @@ async function finalizeCrop(rect) {
   const width  = rect.width;
   const height = rect.height;
 
-  // Remove ALL crop rects first — before ANY rendering
+  // Remove crop selection rect FIRST before any rendering
   fabricCanvas.getObjects().filter(o => o.isCropRect).forEach(o => fabricCanvas.remove(o));
   fabricCanvas.remove(rect);
   cropRect = null;
@@ -1447,91 +1447,67 @@ async function finalizeCrop(rect) {
   try {
     const page = await pdfDoc.getPage(currentPage);
 
-    // ── Render at CANVAS scale (same as what's displayed) ──
-    // No 4x then shrink — that's what caused pixelation
-    // We render at a HIGHER scale for the crop but store at canvas size
-    const CAPTURE_SCALE = 3;
-    const capViewport = page.getViewport({ scale: CAPTURE_SCALE });
-    const capCanvas   = document.createElement('canvas');
-    capCanvas.width   = capViewport.width;
-    capCanvas.height  = capViewport.height;
-    const capCtx      = capCanvas.getContext('2d');
-    capCtx.fillStyle  = '#ffffff';
-    capCtx.fillRect(0, 0, capCanvas.width, capCanvas.height);
-    await page.render({ canvasContext: capCtx, viewport: capViewport }).promise;
+    // Render at 3x for crisp capture
+    const SCALE = 3;
+    const vp = page.getViewport({ scale: SCALE });
+    const cap = document.createElement('canvas');
+    cap.width = vp.width;
+    cap.height = vp.height;
+    const capCtx = cap.getContext('2d');
+    capCtx.fillStyle = '#ffffff';
+    capCtx.fillRect(0, 0, cap.width, cap.height);
+    await page.render({ canvasContext: capCtx, viewport: vp }).promise;
 
-    // Map: fabric canvas coords → capture canvas coords
-    const displayScale  = 1.5 * zoomLevel;          // what fabric canvas uses
-    const ratio         = CAPTURE_SCALE / displayScale;
-    const cLeft   = Math.max(0, Math.floor(left   * ratio));
-    const cTop    = Math.max(0, Math.floor(top    * ratio));
-    const cWidth  = Math.min(Math.ceil(width  * ratio), capCanvas.width  - cLeft);
-    const cHeight = Math.min(Math.ceil(height * ratio), capCanvas.height - cTop);
+    // Map canvas coords → 3x coords
+    const displayScale = 1.5 * zoomLevel;
+    const ratio = SCALE / displayScale;
+    const cL = Math.max(0, Math.floor(left   * ratio));
+    const cT = Math.max(0, Math.floor(top    * ratio));
+    const cW = Math.min(Math.ceil(width  * ratio), cap.width  - cL);
+    const cH = Math.min(Math.ceil(height * ratio), cap.height - cT);
 
-    // ── Extract region at capture resolution — stored at THAT size ──
-    // The fabric image will be displayed at canvas size via scaleX/scaleY = 1
-    // because we set the image dimensions = canvas region size directly
-    const regionCanvas = document.createElement('canvas');
-    regionCanvas.width  = cWidth;
-    regionCanvas.height = cHeight;
-    regionCanvas.getContext('2d').drawImage(
-      capCanvas, cLeft, cTop, cWidth, cHeight, 0, 0, cWidth, cHeight
-    );
+    // Extract the region
+    const region = document.createElement('canvas');
+    region.width = cW;
+    region.height = cH;
+    region.getContext('2d').drawImage(cap, cL, cT, cW, cH, 0, 0, cW, cH);
 
-    // ── Erase: repaint clean PDF pixels into background at exactly that region ──
-    const bgImg = fabricCanvas.backgroundImage;
-    if (bgImg) {
-      const bgEl = bgImg._element || bgImg.getElement();
-      const bgWork = document.createElement('canvas');
-      bgWork.width  = fabricCanvas.width;
-      bgWork.height = fabricCanvas.height;
-      const bgCtx   = bgWork.getContext('2d');
-      bgCtx.drawImage(bgEl, 0, 0, fabricCanvas.width, fabricCanvas.height);
-
-      // Paint clean PDF pixels from capture canvas back into that region
-      bgCtx.drawImage(capCanvas, cLeft, cTop, cWidth, cHeight, left, top, width, height);
-
-      const newBgUrl = bgWork.toDataURL('image/png');
-      await new Promise(resolve => {
-        fabric.Image.fromURL(newBgUrl, (newBg) => {
-          newBg.set({ selectable: false, evented: false, excludeFromExport: true });
-          fabricCanvas.setBackgroundImage(newBg, () => {
-            fabricCanvas.renderAll();
-            resolve();
-          }, { scaleX: 1, scaleY: 1 });
-        });
-      });
-      pageData[currentPage - 1].bgDataUrl = newBgUrl;
-    }
-
-    // ── Place cropped piece as moveable Fabric image ──
-    // Scale it so it displays exactly at canvas region size
-    const regionDataUrl = regionCanvas.toDataURL('image/png');
-    await new Promise(resolve => {
-      const imgEl   = new Image();
-      imgEl.onload  = () => {
-        const fabImg = new fabric.Image(imgEl, {
-          left,
-          top,
-          scaleX: width  / cWidth,
-          scaleY: height / cHeight,
-          selectable: true,
-          evented: true,
-        });
-        fabricCanvas.add(fabImg);
-        fabricCanvas.setActiveObject(fabImg);
-        fabricCanvas.renderAll();
-        pushUndo();
-        saveCurrentPageState();
-        showToast('Region cut — drag it anywhere!', 'success');
-        resolve();
-      };
-      imgEl.src = regionDataUrl;
+    // Step 1: Put a WHITE rectangle where the region was — simple, clean
+    const whiteBox = new fabric.Rect({
+      left, top, width, height,
+      fill: '#ffffff',
+      stroke: null,
+      strokeWidth: 0,
+      selectable: false,
+      evented: false,
+      isWhiteout: true,
     });
+    fabricCanvas.add(whiteBox);
+    fabricCanvas.renderAll();
+
+    // Step 2: Place the cropped piece as a moveable image on top
+    const dataUrl = region.toDataURL('image/png');
+    const imgEl = new Image();
+    imgEl.onload = () => {
+      const fabImg = new fabric.Image(imgEl, {
+        left, top,
+        scaleX: width  / cW,
+        scaleY: height / cH,
+        selectable: true,
+        evented: true,
+      });
+      fabricCanvas.add(fabImg);
+      fabricCanvas.setActiveObject(fabImg);
+      fabricCanvas.renderAll();
+      pushUndo();
+      saveCurrentPageState();
+      showToast('Done — drag it anywhere!', 'success');
+    };
+    imgEl.src = dataUrl;
 
   } catch(err) {
-    console.error('Crop error:', err);
-    showToast('Crop failed: ' + err.message, 'error');
+    console.error(err);
+    showToast('Failed: ' + err.message, 'error');
   } finally {
     hideLoading();
     setTool('select');
