@@ -18,4 +18,4 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 COPY . .
 EXPOSE 8080
-CMD gunicorn --bind 0.0.0.0:8080 --timeout 300 --workers 4 --threads 2 app:app
+CMD gunicorn --bind 0.0.0.0:8080 --timeout 300 --workers 1 --threads 4 --worker-class gthread --max-requests 100 --max-requests-jitter 10 app:app
