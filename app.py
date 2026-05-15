@@ -1,4 +1,5 @@
 from flask import Flask, request, send_file, render_template, jsonify
+import gc
 import os, uuid, zipfile, base64, re, unicodedata, traceback
 from werkzeug.utils import secure_filename
 from pdf2image import convert_from_path
@@ -6,6 +7,9 @@ from PIL import Image
 import pdfplumber
 
 app = Flask(__name__, static_folder='static')
+@app.teardown_request
+def cleanup(exception=None):
+    gc.collect()
 UPLOAD_FOLDER = '/tmp/uploads'
 OUTPUT_FOLDER = '/tmp/outputs'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
