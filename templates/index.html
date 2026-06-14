@@ -1,1763 +1,1626 @@
-<!DOCTYPE html>
-<html lang="en">
-<head><link rel="icon" href="/static/favicon.ico?v=2">
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+from flask import Flask, request, send_file, render_template, jsonify
+import gc
+import os, uuid, zipfile, base64, re, unicodedata, traceback
+from werkzeug.utils import secure_filename
+from pdf2image import convert_from_path
+from PIL import Image
+import pdfplumber
 
-<!-- Primary SEO -->
-<title>ieatpdf.com – Free Online PDF Converter, Merge, Split & Compress</title>
-<meta name="description" content="Free online PDF tools — convert PDF to Word, Excel, PowerPoint, JPG, PNG. Merge, split, compress, lock and unlock PDF files instantly. No signup required. Files deleted immediately.">
-<meta name="keywords" content="pdf converter, convert pdf to word, pdf to excel, pdf to jpg, merge pdf, split pdf, compress pdf, lock pdf, unlock pdf, free pdf tools, online pdf converter">
-<meta name="author" content="ieatpdf.com">
-<meta name="robots" content="index, follow">
-<link rel="canonical" href="https://ieatpdf.com/">
+app = Flask(__name__, static_folder='static')
+@app.teardown_request
+def cleanup(exception=None):
+    gc.collect()
+UPLOAD_FOLDER = '/tmp/uploads'
+OUTPUT_FOLDER = '/tmp/outputs'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-<!-- Open Graph (Facebook, WhatsApp, LinkedIn previews) -->
-<meta property="og:type" content="website">
-<meta property="og:url" content="https://ieatpdf.com/">
-<meta property="og:title" content="ieatpdf.com – Free Online PDF Converter & Tools">
-<meta property="og:description" content="Convert PDF to Word, Excel, PowerPoint, images and more. Merge, split, compress, lock and unlock PDFs — free, fast, and private. Files deleted immediately after conversion.">
-<meta property="og:image" content="https://ieatpdf.com/static/logo.png">
-<meta property="og:site_name" content="ieatpdf.com">
+def detect_pdf_type(input_path):
+    try:
+        with pdfplumber.open(input_path) as pdf:
+            has_text = False
+            has_images = False
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text and len(text.strip()) > 50:
+                    has_text = True
+                if page.images:
+                    has_images = True
+                if has_text and has_images:
+                    break
+            if has_text and has_images:
+                return 'mixed'
+            elif has_text:
+                return 'text'
+            else:
+                return 'scanned'
+    except:
+        return 'scanned'
 
-<!-- Twitter Card -->
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:url" content="https://ieatpdf.com/">
-<meta name="twitter:title" content="ieatpdf.com – Free Online PDF Converter & Tools">
-<meta name="twitter:description" content="Convert PDF to Word, Excel, PowerPoint, images and more. Merge, split, compress, lock and unlock PDFs — free, fast, and private.">
-<meta name="twitter:image" content="https://ieatpdf.com/static/logo.png">
+def pdf_to_images(input_path, dpi=120):
+    return convert_from_path(input_path, dpi=dpi, thread_count=1, use_cropbox=True, strict=False)
 
-<!-- Schema.org structured data -->
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "WebApplication",
-  "name": "ieatpdf.com",
-  "url": "https://ieatpdf.com",
-  "description": "Free online PDF tools — convert, merge, split, compress, lock and unlock PDF files instantly.",
-  "applicationCategory": "UtilitiesApplication",
-  "operatingSystem": "Any",
-  "offers": {
-    "@type": "Offer",
-    "price": "0",
-    "priceCurrency": "USD"
-  },
-  "featureList": [
-    "PDF to Word converter",
-    "PDF to Excel converter",
-    "PDF to PowerPoint converter",
-    "PDF to JPG converter",
-    "PDF to PNG converter",
-    "PDF to HTML converter",
-    "Merge PDF files",
-    "Split PDF files",
-    "Compress PDF",
-    "Lock PDF with password",
-    "Unlock PDF password"
-  ]
-}
-</script>
+def ocr_images(images):
+    import pytesseract
+    return [pytesseract.image_to_string(img, lang='eng+ara') for img in images]
+
+def is_rtl_text(text):
+    return any(unicodedata.bidirectional(c) in ('R', 'AL') for c in text if c.strip())
+
+def fix_rtl(line):
+    try:
+        import arabic_reshaper
+        line = arabic_reshaper.reshape(line)
+    except:
+        pass
+    from bidi.algorithm import get_display
+    return get_display(line)
+
+def fix_arabic_for_docx(line):
+    """For Word docs: reshape Arabic letters to connect them, but don't
+    apply bidi display transform — Word handles RTL direction natively."""
+    try:
+        import arabic_reshaper
+        line = arabic_reshaper.reshape(line)
+    except:
+        pass
+    return line
+
+def clean_text(text):
+    if not text:
+        return ''
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    text = text.replace('\n', ' ').replace('\r', ' ')
+    text = re.sub(r' +', ' ', text).strip()
+    return text
+
+def save_image_file(img, path, save_fmt):
+    img = img.copy()
+    if save_fmt == 'JPEG':
+        if img.mode in ('RGBA', 'LA', 'P'):
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            if img.mode == 'P':
+                img = img.convert('RGBA')
+            if img.mode in ('RGBA', 'LA'):
+                background.paste(img, mask=img.split()[-1])
+            img = background
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+        img.save(path, 'JPEG', quality=95)
+    else:
+        if img.mode not in ('RGB', 'RGBA'):
+            img = img.convert('RGB')
+        img.save(path, 'PNG')
+
+def save_as_docx_images(images, output_path, uid):
+    from docx import Document
+    from docx.shared import Inches, Pt, Emu
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    import lxml.etree as etree
+
+    doc = Document()
+
+    for i, img in enumerate(images):
+        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
+        save_image_file(img, img_path, 'PNG')
+        w_px, h_px = img.size
+
+        # Use current section for first page, add new section for subsequent pages
+        if i == 0:
+            section = doc.sections[0]
+        else:
+            # Add continuous section break then switch to new page section
+            new_section = doc.add_section()
+            section = doc.sections[-1]
+
+        # Set page size exactly to image dimensions (at 96 DPI → EMU)
+        # 1 inch = 914400 EMU, image rendered at ~100dpi
+        dpi = 100
+        page_w_emu = int(w_px / dpi * 914400)
+        page_h_emu = int(h_px / dpi * 914400)
+        section.page_width = Emu(page_w_emu)
+        section.page_height = Emu(page_h_emu)
+        section.top_margin = Emu(0)
+        section.bottom_margin = Emu(0)
+        section.left_margin = Emu(0)
+        section.right_margin = Emu(0)
+
+        # Add the image paragraph
+        para = doc.add_paragraph()
+        para.paragraph_format.space_before = Pt(0)
+        para.paragraph_format.space_after = Pt(0)
+        run = para.add_run()
+        run.add_picture(img_path, width=Emu(page_w_emu), height=Emu(page_h_emu))
+
+    doc.save(output_path)
+
+def save_as_pptx_images(images, output_path, uid):
+    from pptx import Presentation
+    from pptx.util import Inches, Emu
+    first_img = images[0]
+    img_w, img_h = first_img.size
+    slide_w = Inches(10)
+    slide_h = Emu(int(slide_w * img_h / img_w))
+    prs = Presentation()
+    prs.slide_width = slide_w
+    prs.slide_height = slide_h
+    blank_layout = prs.slide_layouts[6]
+    for i, img in enumerate(images):
+        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
+        save_image_file(img, img_path, 'PNG')
+        slide = prs.slides.add_slide(blank_layout)
+        slide.shapes.add_picture(img_path, 0, 0, width=slide_w, height=slide_h)
+    prs.save(output_path)
+
+def save_as_html_images(images, output_path, uid):
+    pages_html = ''
+    for i, img in enumerate(images):
+        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.png')
+        save_image_file(img, img_path, 'PNG')
+        with open(img_path, 'rb') as f:
+            b64 = base64.b64encode(f.read()).decode()
+        pages_html += f'<div class="page"><img src="data:image/png;base64,{b64}" alt="Page {i+1}"></div>\n'
+    html = f'''<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
-
-  .layout { display: flex; gap: 24px; width: 100%; max-width: 1200px; align-items: flex-start; justify-content: center; }
-
-  /* Preview Panel */
-  .preview-panel { display: none; width: 440px; min-width: 320px; flex-shrink: 0; background: #1e1e1e; border-radius: 20px; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.25); position: sticky; top: 20px; max-height: 90vh; flex-direction: column; }
-  .preview-panel.visible { display: flex; }
-  .preview-header { background: #2a2a2a; padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
-  .preview-header-title { color: #ccc; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; margin-right: 10px; }
-  .preview-nav { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-  .nav-btn { background: #3a3a3a; border: none; color: white; width: 28px; height: 28px; border-radius: 6px; cursor: pointer; font-size: 14px; transition: background 0.15s; display: flex; align-items: center; justify-content: center; }
-  .nav-btn:hover:not(:disabled) { background: #4f46e5; }
-  .nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-  .page-info { color: #888; font-size: 12px; min-width: 60px; text-align: center; }
-  .preview-body { flex: 1; overflow-y: auto; background: #2a2a2a; padding: 12px; min-height: 300px; display: flex; align-items: flex-start; justify-content: center; }
-  .preview-loading { color: #666; font-size: 13px; padding: 40px; text-align: center; width: 100%; }
-
-  /* Specific preview containers */
-  #pdfCanvasWrap canvas { display: block; border-radius: 4px; box-shadow: 0 2px 12px rgba(0,0,0,0.4); max-width: 100%; }
-  #imgPreview { max-width: 100%; border-radius: 4px; box-shadow: 0 2px 12px rgba(0,0,0,0.4); display: block; }
-  #docxPreview { background: white; border-radius: 4px; padding: 20px; width: 100%; font-size: 13px; min-height: 200px; }
-  #xlsxPreview { background: white; border-radius: 4px; width: 100%; overflow-x: auto; }
-  #xlsxPreview table { border-collapse: collapse; font-size: 12px; width: 100%; }
-  #xlsxPreview th, #xlsxPreview td { border: 1px solid #ddd; padding: 4px 8px; white-space: nowrap; }
-  #xlsxPreview th { background: #f0f0f0; font-weight: 700; }
-  #pptxPreview { background: white; border-radius: 4px; width: 100%; }
-  #pptxPreview .slide { width: 100%; }
-
-  /* Card */
-  .card { background: white; border-radius: 20px; padding: 44px; max-width: 600px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.10); flex-shrink: 0; }
-
-  /* Mode Toggle */
-  .mode-toggle-wrap { display: flex; align-items: center; justify-content: center; margin-bottom: 28px; }
-  .mode-toggle { display: grid; grid-template-columns: repeat(3, 1fr); background: #f0f2f5; border-radius: 12px; padding: 4px; gap: 3px; width: 100%; }
-  .mode-toggle-edit-link { display: flex; align-items: center; justify-content: center; padding: 9px 6px; border-radius: 9px; font-size: 12px; font-weight: 600; cursor: pointer; background: linear-gradient(135deg,#4f46e5,#7c3aed); color: white; text-decoration: none; text-align: center; white-space: nowrap; transition: opacity 0.2s; grid-column: span 3; margin-top: 4px; }
-  .mode-toggle-edit-link:hover { opacity: 0.88; }
-  .mode-toggle-btn { padding: 9px 6px; border: none; border-radius: 9px; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: transparent; color: #888; white-space: nowrap; text-align: center; }
-  .mode-toggle-btn:hover { color: #4f46e5; background: rgba(99,102,241,0.08); }
-  .mode-toggle-btn.active { background: white; color: #4f46e5; box-shadow: 0 2px 8px rgba(0,0,0,0.10); }
-
-  .logo-row { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
-  .logo-row img { width: 48px; height: 48px; }
-  h1 { font-size: 28px; font-weight: 800; color: #111; }
-  .subtitle { color: #777; font-size: 15px; margin-bottom: 36px; }
-
-  .drop-zone { border: 2px dashed #d1d5db; border-radius: 14px; padding: 44px 20px; text-align: center; cursor: pointer; transition: all 0.2s; background: #fafafa; margin-bottom: 20px; }
-  .drop-zone:hover, .drop-zone.drag-over { border-color: #6366f1; background: #f5f3ff; }
-  .drop-zone input { display: none; }
-  .drop-icon { font-size: 44px; margin-bottom: 14px; display: block; }
-  .drop-text { font-size: 16px; font-weight: 600; color: #333; }
-  .drop-hint { font-size: 13px; color: #aaa; margin-top: 5px; }
-
-  .file-selected { display: none; flex-direction: column; gap: 8px; background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px; }
-  .file-row { display: flex; align-items: center; gap: 10px; }
-  .fname { font-size: 14px; color: #166534; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .fsize { font-size: 12px; color: #166534; opacity: 0.7; }
-  .remove-file { background: none; border: none; cursor: pointer; color: #aaa; font-size: 18px; flex-shrink: 0; }
-  .upload-progress { display: none; flex-direction: column; gap: 6px; }
-  .progress-label { font-size: 12px; color: #166534; font-weight: 500; }
-  .progress-track { background: #dcfce7; border-radius: 99px; height: 6px; overflow: hidden; }
-  .progress-fill { height: 100%; background: #22c55e; border-radius: 99px; width: 0%; transition: width 0.1s; }
-
-  .detect-banner { display: none; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px; font-size: 14px; font-weight: 500; }
-  .detect-banner.text-pdf { background: #eff6ff; border: 1.5px solid #bfdbfe; color: #1e40af; }
-  .detect-banner.scanned-pdf { background: #fff7ed; border: 1.5px solid #fed7aa; color: #9a3412; }
-  .detect-banner.mixed-pdf { background: #f5f3ff; border: 1.5px solid #ddd6fe; color: #5b21b6; }
-  .detect-banner .banner-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
-  .detect-banner .banner-sub { font-size: 13px; opacity: 0.85; }
-
-  .mode-selector { display: none; background: #fafafa; border: 1.5px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 20px; }
-  .mode-selector p { font-size: 13px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
-  .mode-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .mode-opt { border: 1.5px solid #e5e7eb; border-radius: 10px; padding: 14px 12px; cursor: pointer; transition: all 0.15s; background: white; text-align: left; position: relative; }
-  .mode-opt:hover { border-color: #6366f1; }
-  .mode-opt.active { border-color: #6366f1; background: #eef2ff; }
-  .mode-opt .mode-title { font-size: 14px; font-weight: 700; color: #333; display: block; margin-bottom: 4px; }
-  .mode-opt.active .mode-title { color: #4f46e5; }
-  .mode-opt .mode-desc { font-size: 12px; color: #888; display: block; line-height: 1.4; }
-  .recommended-badge { position: absolute; top: -10px; right: 10px; background: #4f46e5; color: white; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 99px; }
-
-  .section-label { font-size: 12px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 12px; }
-  .formats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 32px; }
-  .to-pdf-formats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 32px; }
-  .fmt { border: 1.5px solid #e5e7eb; border-radius: 12px; padding: 14px 6px; text-align: center; cursor: pointer; transition: all 0.15s; background: #fafafa; }
-  .fmt:hover { border-color: #6366f1; background: #f5f3ff; }
-  .fmt.active { border-color: #6366f1; background: #eef2ff; }
-  .fmt .icon { font-size: 22px; display: block; margin-bottom: 6px; }
-  .fmt .ext { font-size: 13px; font-weight: 700; color: #333; display: block; }
-  .fmt .desc { font-size: 10px; color: #999; margin-top: 3px; display: block; }
-  .fmt.active .ext { color: #4f46e5; }
-
-  .files-list { display: none; flex-direction: column; gap: 6px; margin-bottom: 20px; }
-  .file-item { display: flex; align-items: center; gap: 10px; background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 10px; padding: 10px 14px; }
-  .file-item .fname { font-size: 13px; color: #166534; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .file-item .fsize { font-size: 11px; color: #166534; opacity: 0.7; flex-shrink: 0; }
-
-  .btn { width: 100%; padding: 15px; background: #4f46e5; color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer; transition: background 0.2s; }
-  .btn:hover:not(:disabled) { background: #4338ca; }
-  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
-
-  .convert-progress { display: none; margin-top: 18px; flex-direction: column; gap: 8px; }
-  .convert-progress-label { font-size: 13px; color: #4f46e5; font-weight: 500; }
-  .convert-track { background: #eef2ff; border-radius: 99px; height: 8px; overflow: hidden; }
-  .convert-fill { height: 100%; background: linear-gradient(90deg, #6366f1, #4f46e5); border-radius: 99px; width: 0%; transition: width 0.3s; }
-
-  .status { display: none; margin-top: 18px; padding: 14px 18px; border-radius: 12px; font-size: 14px; font-weight: 500; }
-  .status.error { background: #fef2f2; color: #991b1b; border: 1.5px solid #fecaca; }
-  .status.success { background: #f0fdf4; color: #166534; border: 1.5px solid #86efac; }
-
-  @media (max-width: 900px) {
-    .layout { flex-direction: column; align-items: center; }
-    .preview-panel { width: 100%; max-width: 600px; position: static; order: -1; max-height: 60vw; }
-    .card { max-width: 600px; }
-  }
-  @media (max-width: 480px) {
-    body { padding: 12px; align-items: flex-start; }
-    .card { padding: 24px 18px; border-radius: 16px; }
-    h1 { font-size: 22px; }
-    .subtitle { font-size: 13px; margin-bottom: 24px; }
-    .drop-zone { padding: 32px 16px; }
-    .drop-icon { font-size: 36px; }
-    .drop-text { font-size: 14px; }
-    .formats { grid-template-columns: repeat(3, 1fr); }
-    .to-pdf-formats { grid-template-columns: repeat(2, 1fr); }
-    .fmt { padding: 12px 4px; }
-    .fmt .icon { font-size: 20px; }
-    .fmt .ext { font-size: 12px; }
-    .mode-options { grid-template-columns: 1fr; }
-    .btn { padding: 14px; font-size: 15px; }
-  }
-</style>
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "FAQPage",
-  "mainEntity": [
-    {"@type":"Question","name":"Is ieatpdf.com free to use?","acceptedAnswer":{"@type":"Answer","text":"Yes, completely free. No signup, no subscription, no hidden fees. All tools are 100% free."}},
-    {"@type":"Question","name":"Are my files safe and private?","acceptedAnswer":{"@type":"Answer","text":"Yes. Files are processed instantly and permanently deleted immediately after conversion. We never store, share, or access your documents."}},
-    {"@type":"Question","name":"How do I convert a PDF to Word?","acceptedAnswer":{"@type":"Answer","text":"Click Convert PDF, upload your PDF, select DOCX format, choose Image-based or OCR mode, then click Convert. Your Word file downloads instantly."}},
-    {"@type":"Question","name":"What file formats can I convert a PDF to?","acceptedAnswer":{"@type":"Answer","text":"You can convert PDF to Word (DOCX), Excel (XLSX), PowerPoint (PPTX), HTML, JPG, and PNG."}},
-    {"@type":"Question","name":"Is there a file size limit?","acceptedAnswer":{"@type":"Answer","text":"Yes, the maximum file size is 20MB per file. For larger files, try using the Compress tool first."}}
-  ]
-}
-</script>
-<!-- Google Analytics -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-JWRNVEV5EN"></script>
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
-  gtag('config', 'G-JWRNVEV5EN');
-</script>
-</head>
-<body>
-<div class="layout" id="layout">
-
-  <!-- Preview Panel — used by both modes -->
-  <div class="preview-panel" id="previewPanel">
-    <div class="preview-header">
-      <div class="preview-header-title" id="previewTitle">Preview</div>
-      <div class="preview-nav">
-        <button class="nav-btn" id="prevPage" disabled>‹</button>
-        <span class="page-info" id="pageInfo"></span>
-        <button class="nav-btn" id="nextPage" disabled>›</button>
-      </div>
-    </div>
-    <div class="preview-body" id="previewBody">
-      <div class="preview-loading" id="previewLoading">Rendering preview...</div>
-      <!-- PDF viewer -->
-      <div id="pdfCanvasWrap" style="display:none;"><canvas id="pdfCanvas"></canvas></div>
-      <!-- Image viewer -->
-      <img id="imgPreview" style="display:none;" alt="preview">
-      <!-- DOCX viewer -->
-      <div id="docxPreview" style="display:none;"></div>
-      <!-- XLSX viewer -->
-      <div id="xlsxPreview" style="display:none;"></div>
-      <!-- PPTX viewer -->
-      <div id="pptxPreview" style="display:none;"></div>
-    </div>
-  </div>
-
-  <!-- Main Card -->
-  <div class="card">
-    <!-- Top Tab Bar -->
-    <div class="mode-toggle-wrap">
-      <div class="mode-toggle">
-        <button class="mode-toggle-btn active" id="btnFromPdf" onclick="setAppMode('from-pdf')">🔄 Convert PDF</button>
-        <button class="mode-toggle-btn" id="btnMerge" onclick="setAppMode('merge')">🔀 Merge</button>
-        <button class="mode-toggle-btn" id="btnSplit" onclick="setAppMode('split')">✂️ Split</button>
-        <button class="mode-toggle-btn" id="btnCompress" onclick="setAppMode('compress')">🗜️ Compress</button>
-        <button class="mode-toggle-btn" id="btnLock" onclick="setAppMode('lock')">🔒 Lock</button>
-        <button class="mode-toggle-btn" id="btnUnlock" onclick="setAppMode('unlock')">🔓 Unlock</button>
-        <a class="mode-toggle-edit-link" href="/edit-pdf">✏️ Edit PDF — annotate, draw, add text & images</a>
-      </div>
-    </div>
-
-    <div class="logo-row">
-      <img src="/static/logo.png" alt="ieatpdf">
-      <h1>ieatpdf — All-in-One PDF Tools</h1>
-    </div>
-    <p class="subtitle" id="subtitleText">Convert, merge, split, compress, lock and unlock PDF files — free, fast and private</p>
-
-    <!-- ═══════════════════════════════════════ -->
-    <!-- MODE A: PDF → X (and X → PDF)          -->
-    <!-- ═══════════════════════════════════════ -->
-    <div id="convertSection">
-      <!-- Sub-toggle -->
-      <div style="display:flex; gap:8px; margin-bottom:24px;">
-        <button id="subBtnFromPdf" onclick="setSubMode('from-pdf')" style="flex:1; padding:9px; border:1.5px solid #6366f1; border-radius:9px; background:#eef2ff; color:#4f46e5; font-size:13px; font-weight:700; cursor:pointer;">📄 PDF → File</button>
-        <button id="subBtnToPdf" onclick="setSubMode('to-pdf')" style="flex:1; padding:9px; border:1.5px solid #e5e7eb; border-radius:9px; background:white; color:#888; font-size:13px; font-weight:700; cursor:pointer;">File → PDF 📄</button>
-      </div>
-
-    <div id="fromPdfSection">
-      <div class="drop-zone" id="dropZone">
-        <input type="file" id="fileInput" accept=".pdf">
-        <span class="drop-icon">📄</span>
-        <div class="drop-text">Drop your PDF here or click to browse</div>
-        <div class="drop-hint">PDF files only • Max 20MB</div>
-      </div>
-      <div class="file-selected" id="fileSelected">
-        <div class="file-row">
-          <span>✅</span>
-          <span class="fname" id="fileName"></span>
-          <span class="fsize" id="fileSize"></span>
-          <button class="remove-file" id="removeFile">✕</button>
-        </div>
-        <div class="upload-progress" id="uploadProgress">
-          <div class="progress-label" id="uploadLabel">Analyzing...</div>
-          <div class="progress-track"><div class="progress-fill" id="uploadFill"></div></div>
-        </div>
-      </div>
-      <div class="detect-banner" id="detectBanner"></div>
-
-      <!-- Locked PDF banner -->
-      <div id="lockedBanner" style="display:none; border-radius:12px; padding:16px 18px; margin-bottom:20px; background:#fef2f2; border:1.5px solid #fecaca;">
-        <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
-          <span style="font-size:22px;">🔐</span>
-          <div>
-            <div style="font-size:15px; font-weight:700; color:#991b1b;">Password Protected PDF</div>
-            <div style="font-size:13px; color:#b91c1c; margin-top:2px;">This PDF is locked. You must unlock it before converting, compressing, merging, or splitting.</div>
-          </div>
-        </div>
-        <button onclick="goToUnlock()" style="width:100%; padding:10px; background:#dc2626; color:white; border:none; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer;">🔓 Go to Unlock PDF</button>
-      </div>
-      <div class="page-selector" id="pageSelector" style="display:none; background:#fafafa; border:1.5px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:20px;">
-        <p style="font-size:13px; font-weight:700; color:#555; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">Select pages to convert</p>
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;">
-          <div class="page-opt active" data-page="all" style="border:1.5px solid #6366f1; border-radius:10px; padding:14px 12px; cursor:pointer; background:#eef2ff; text-align:left;">
-            <span style="font-size:14px; font-weight:700; color:#4f46e5; display:block; margin-bottom:4px;">🗂️ All pages</span>
-            <span id="allPagesDesc" style="font-size:12px; color:#888; display:block;">All pages</span>
-          </div>
-          <div class="page-opt" data-page="specific" style="border:1.5px solid #e5e7eb; border-radius:10px; padding:14px 12px; cursor:pointer; background:white; text-align:left;">
-            <span style="font-size:14px; font-weight:700; color:#333; display:block; margin-bottom:4px;">📄 Specific pages</span>
-            <span style="font-size:12px; color:#888; display:block;">Choose which pages</span>
-          </div>
-        </div>
-        <div id="pageInputArea" style="display:none;">
-          <label style="font-size:13px; color:#555; font-weight:500; display:block; margin-bottom:6px;">Enter page numbers (e.g. 1, 3, 5 or 1-5)</label>
-          <input type="text" id="pageInput" placeholder="e.g. 1-3, 5, 7" style="width:100%; padding:10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:14px; outline:none;">
-          <p id="pageInputHint" style="font-size:12px; color:#888; margin-top:6px;"></p>
-          <p id="pageInputError" style="font-size:12px; color:#dc2626; margin-top:4px; display:none;"></p>
-        </div>
-      </div>
-      <div class="mode-selector" id="modeSelector">
-        <p>Choose conversion mode</p>
-        <div class="mode-options" id="modeOptions"></div>
-      </div>
-      <p class="section-label">Convert to</p>
-      <div class="formats" id="formats">
-        <div class="fmt" data-fmt="docx"><span class="icon">📝</span><span class="ext">DOCX</span><span class="desc">Word</span></div>
-        <div class="fmt" data-fmt="xlsx"><span class="icon">📊</span><span class="ext">XLSX</span><span class="desc">Excel</span></div>
-        <div class="fmt" data-fmt="pptx"><span class="icon">📽️</span><span class="ext">PPTX</span><span class="desc">PowerPoint</span></div>
-        <div class="fmt" data-fmt="html"><span class="icon">🌐</span><span class="ext">HTML</span><span class="desc">Webpage</span></div>
-        <div class="fmt" data-fmt="jpg"><span class="icon">🖼️</span><span class="ext">JPG</span><span class="desc">Image</span></div>
-        <div class="fmt" data-fmt="png"><span class="icon">🎨</span><span class="ext">PNG</span><span class="desc">Image</span></div>
-      </div>
-      <button class="btn" id="convertBtn" disabled>Convert file</button>
-    </div>
-
-    <!-- ═══════════════════════════════════════ -->
-    <!-- MODE B: X → PDF                        -->
-    <!-- ═══════════════════════════════════════ -->
-    <div id="toPdfSection" style="display:none;">
-      <p class="section-label">Select file type to convert</p>
-      <div class="to-pdf-formats">
-        <div class="fmt active" data-topdf="image" onclick="selectToPdfFmt(this,'image')"><span class="icon">🖼️</span><span class="ext">Image</span><span class="desc">JPG / PNG</span></div>
-        <div class="fmt" data-topdf="docx" onclick="selectToPdfFmt(this,'docx')"><span class="icon">📝</span><span class="ext">DOCX</span><span class="desc">Word</span></div>
-        <div class="fmt" data-topdf="xlsx" onclick="selectToPdfFmt(this,'xlsx')"><span class="icon">📊</span><span class="ext">XLSX</span><span class="desc">Excel</span></div>
-        <div class="fmt" data-topdf="pptx" onclick="selectToPdfFmt(this,'pptx')"><span class="icon">📽️</span><span class="ext">PPTX</span><span class="desc">PowerPoint</span></div>
-      </div>
-      <div class="drop-zone" id="toPdfDropZone">
-        <input type="file" id="toPdfFileInput" accept="image/*" multiple>
-        <span class="drop-icon" id="toPdfDropIcon">🖼️</span>
-        <div class="drop-text" id="toPdfDropText">Drop images here or click to browse</div>
-        <div class="drop-hint" id="toPdfDropHint">JPG, PNG • Multiple files allowed • Combined into one PDF</div>
-      </div>
-      <div class="files-list" id="filesList"></div>
-      <button class="btn" id="toPdfBtn" disabled>Convert to PDF</button>
-    </div>
-    </div><!-- end convertSection -->
-
-    <!-- ═══════════════════════════════════════ -->
-    <!-- MERGE                                  -->
-    <!-- ═══════════════════════════════════════ -->
-    <div id="mergeSection" style="display:none;">
-      <div class="drop-zone" id="mergeDropZone">
-        <input type="file" id="mergeFileInput" accept=".pdf" multiple>
-        <span class="drop-icon">🔀</span>
-        <div class="drop-text">Drop PDF files here or click to browse</div>
-        <div class="drop-hint">Multiple PDF files • Combined into one • Drag to reorder</div>
-      </div>
-      <div class="files-list" id="mergeFilesList"></div>
-      <button class="btn" id="mergeBtn" disabled>Merge PDFs</button>
-    </div>
-
-    <!-- ═══════════════════════════════════════ -->
-    <!-- SPLIT                                  -->
-    <!-- ═══════════════════════════════════════ -->
-    <div id="splitSection" style="display:none;">
-      <div class="drop-zone" id="splitDropZone">
-        <input type="file" id="splitFileInput" accept=".pdf">
-        <span class="drop-icon">✂️</span>
-        <div class="drop-text">Drop your PDF here or click to browse</div>
-        <div class="drop-hint">PDF files only • Single file</div>
-      </div>
-      <div class="file-selected" id="splitFileSelected" style="display:none;">
-        <div class="file-row">
-          <span>✅</span>
-          <span class="fname" id="splitFileName"></span>
-          <span class="fsize" id="splitFileSize"></span>
-          <button class="remove-file" id="splitRemoveFile">✕</button>
-        </div>
-      </div>
-      <!-- Split options -->
-      <div id="splitOptions" style="display:none; background:#fafafa; border:1.5px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:20px;">
-        <p style="font-size:13px; font-weight:700; color:#555; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">Split method</p>
-        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:14px;">
-          <div id="splitOptAll" onclick="setSplitType('all')" style="border:1.5px solid #6366f1; border-radius:10px; padding:12px 10px; cursor:pointer; background:#eef2ff; text-align:left;">
-            <span style="font-size:13px; font-weight:700; color:#4f46e5; display:block; margin-bottom:4px;">📄 Every page</span>
-            <span style="font-size:11px; color:#888; display:block;">Each page → separate PDF</span>
-          </div>
-          <div id="splitOptRange" onclick="setSplitType('range')" style="border:1.5px solid #e5e7eb; border-radius:10px; padding:12px 10px; cursor:pointer; background:white; text-align:left;">
-            <span style="font-size:13px; font-weight:700; color:#333; display:block; margin-bottom:4px;">📋 Custom ranges</span>
-            <span style="font-size:11px; color:#888; display:block;">e.g. 1-3, 4-6, 7-10</span>
-          </div>
-          <div id="splitOptAt" onclick="setSplitType('at')" style="border:1.5px solid #e5e7eb; border-radius:10px; padding:12px 10px; cursor:pointer; background:white; text-align:left;">
-            <span style="font-size:13px; font-weight:700; color:#333; display:block; margin-bottom:4px;">✂️ Split at page</span>
-            <span style="font-size:11px; color:#888; display:block;">Two PDFs: before & after</span>
-          </div>
-        </div>
-
-        <!-- Custom ranges input -->
-        <div id="splitRangeInput" style="display:none;">
-          <label style="font-size:13px; color:#555; font-weight:500; display:block; margin-bottom:6px;">Enter page ranges (e.g. 1-3, 4-6, 7)</label>
-          <input type="text" id="splitRangeVal" placeholder="e.g. 1-3, 4-6, 7-10" oninput="validateSplitRange()" style="width:100%; padding:10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:14px; outline:none;">
-          <p id="splitPageHint" style="font-size:12px; color:#888; margin-top:6px;"></p>
-          <p id="splitRangeError" style="font-size:12px; color:#dc2626; margin-top:4px; display:none;"></p>
-        </div>
-
-        <!-- Split at page input -->
-        <div id="splitAtInput" style="display:none;">
-          <label style="font-size:13px; color:#555; font-weight:500; display:block; margin-bottom:6px;">Split at page — pages before and from this page become separate PDFs</label>
-          <input type="number" id="splitAtVal" placeholder="e.g. 6" min="2" oninput="validateSplitAt()" style="width:100%; padding:10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:14px; outline:none;">
-          <p id="splitAtHint" style="font-size:12px; color:#888; margin-top:6px;"></p>
-          <p id="splitAtError" style="font-size:12px; color:#dc2626; margin-top:4px; display:none;"></p>
-        </div>
-      </div>
-      <button class="btn" id="splitBtn" disabled>Split PDF</button>
-    </div>
-
-    <!-- ═══════════════════════════════════════ -->
-    <!-- COMPRESS                               -->
-    <!-- ═══════════════════════════════════════ -->
-    <div id="compressSection" style="display:none;">
-      <div class="drop-zone" id="compressDropZone">
-        <input type="file" id="compressFileInput" accept=".pdf">
-        <span class="drop-icon">🗜️</span>
-        <div class="drop-text">Drop your PDF here or click to browse</div>
-        <div class="drop-hint">PDF files only • Reduces file size</div>
-      </div>
-      <div class="file-selected" id="compressFileSelected" style="display:none;">
-        <div class="file-row">
-          <span>✅</span>
-          <span class="fname" id="compressFileName"></span>
-          <span class="fsize" id="compressFileSize"></span>
-          <button class="remove-file" id="compressRemoveFile">✕</button>
-        </div>
-      </div>
-      <!-- Compression level -->
-      <div id="compressOptions" style="display:none; background:#fafafa; border:1.5px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:20px;">
-        <p style="font-size:13px; font-weight:700; color:#555; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">Compression level</p>
-        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px;">
-          <div id="compressLow" onclick="setCompressLevel('low')" style="border:1.5px solid #e5e7eb; border-radius:10px; padding:12px 8px; cursor:pointer; background:white; text-align:center;">
-            <span style="font-size:18px; display:block; margin-bottom:4px;">🟢</span>
-            <span style="font-size:13px; font-weight:700; color:#333; display:block;">Low</span>
-            <span style="font-size:11px; color:#888;">Best quality</span>
-          </div>
-          <div id="compressMedium" onclick="setCompressLevel('medium')" style="border:1.5px solid #6366f1; border-radius:10px; padding:12px 8px; cursor:pointer; background:#eef2ff; text-align:center;">
-            <span style="font-size:18px; display:block; margin-bottom:4px;">🟡</span>
-            <span style="font-size:13px; font-weight:700; color:#4f46e5; display:block;">Medium</span>
-            <span style="font-size:11px; color:#888;">Recommended</span>
-          </div>
-          <div id="compressHigh" onclick="setCompressLevel('high')" style="border:1.5px solid #e5e7eb; border-radius:10px; padding:12px 8px; cursor:pointer; background:white; text-align:center;">
-            <span style="font-size:18px; display:block; margin-bottom:4px;">🔴</span>
-            <span style="font-size:13px; font-weight:700; color:#333; display:block;">High</span>
-            <span style="font-size:11px; color:#888;">Smallest size</span>
-          </div>
-        </div>
-      </div>
-      <button class="btn" id="compressBtn" disabled>Compress PDF</button>
-    </div>
-
-    <!-- ═══════════════════════════════════════ -->
-    <!-- LOCK                                   -->
-    <!-- ═══════════════════════════════════════ -->
-    <div id="lockSection" style="display:none;">
-      <div class="drop-zone" id="lockDropZone">
-        <input type="file" id="lockFileInput" accept=".pdf">
-        <span class="drop-icon">🔒</span>
-        <div class="drop-text">Drop your PDF here or click to browse</div>
-        <div class="drop-hint">PDF files only • Password will be applied</div>
-      </div>
-      <div class="file-selected" id="lockFileSelected" style="display:none;">
-        <div class="file-row">
-          <span>✅</span>
-          <span class="fname" id="lockFileName"></span>
-          <span class="fsize" id="lockFileSize"></span>
-          <button class="remove-file" id="lockRemoveFile">✕</button>
-        </div>
-      </div>
-      <div id="lockOptions" style="display:none; background:#fafafa; border:1.5px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:20px;">
-        <p style="font-size:13px; font-weight:700; color:#555; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">Set Password</p>
-        <div style="position:relative; margin-bottom:10px;">
-          <input type="password" id="lockPassword" placeholder="Enter password (min. 4 characters)" style="width:100%; padding:10px 42px 10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:14px; outline:none;">
-          <button onclick="togglePwd('lockPassword', 'lockEye')" style="position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; font-size:16px;" id="lockEye">👁️</button>
-        </div>
-        <div style="position:relative;">
-          <input type="password" id="lockPasswordConfirm" placeholder="Confirm password" style="width:100%; padding:10px 42px 10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:14px; outline:none;">
-          <button onclick="togglePwd('lockPasswordConfirm', 'lockEye2')" style="position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; font-size:16px;" id="lockEye2">👁️</button>
-        </div>
-        <p id="lockPwdError" style="font-size:12px; color:#dc2626; margin-top:6px; display:none;"></p>
-      </div>
-      <button class="btn" id="lockBtn" disabled>🔒 Lock PDF</button>
-    </div>
-
-    <!-- ═══════════════════════════════════════ -->
-    <!-- UNLOCK                                 -->
-    <!-- ═══════════════════════════════════════ -->
-    <div id="unlockSection" style="display:none;">
-      <div class="drop-zone" id="unlockDropZone">
-        <input type="file" id="unlockFileInput" accept=".pdf">
-        <span class="drop-icon">🔓</span>
-        <div class="drop-text">Drop your protected PDF here or click to browse</div>
-        <div class="drop-hint">PDF files only • You must know the password</div>
-      </div>
-      <div class="file-selected" id="unlockFileSelected" style="display:none;">
-        <div class="file-row">
-          <span>✅</span>
-          <span class="fname" id="unlockFileName"></span>
-          <span class="fsize" id="unlockFileSize"></span>
-          <button class="remove-file" id="unlockRemoveFile">✕</button>
-        </div>
-      </div>
-      <div id="unlockOptions" style="display:none; background:#fafafa; border:1.5px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:20px;">
-        <p style="font-size:13px; font-weight:700; color:#555; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">Enter PDF Password</p>
-        <div style="position:relative;">
-          <input type="password" id="unlockPassword" placeholder="Enter the PDF password" style="width:100%; padding:10px 42px 10px 12px; border:1.5px solid #e5e7eb; border-radius:8px; font-size:14px; outline:none;">
-          <button onclick="togglePwd('unlockPassword', 'unlockEye')" style="position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; font-size:16px;" id="unlockEye">👁️</button>
-        </div>
-        <p id="unlockPwdError" style="font-size:12px; color:#dc2626; margin-top:6px; display:none;"></p>
-        <!-- Disclaimer -->
-        <div style="margin-top:14px; padding:12px; background:#fff7ed; border:1.5px solid #fed7aa; border-radius:8px;">
-          <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer;">
-            <input type="checkbox" id="unlockDisclaimer" style="margin-top:2px; flex-shrink:0;">
-            <span style="font-size:12px; color:#92400e; line-height:1.5;">I confirm that I am the owner of this PDF and have the right to remove its password protection.</span>
-          </label>
-        </div>
-      </div>
-      <button class="btn" id="unlockBtn" disabled>🔓 Unlock PDF</button>
-    </div>
-
-    <!-- Shared upload progress bar (shown during file uploads in all sections) -->
-    <div id="uploadProgressShared" style="display:none; flex-direction:column; gap:6px; margin-bottom:16px;">
-      <div id="uploadLabelShared" style="font-size:12px; color:#4f46e5; font-weight:500;">Uploading...</div>
-      <div style="background:#eef2ff; border-radius:99px; height:6px; overflow:hidden;">
-        <div id="uploadFillShared" style="height:100%; background:#4f46e5; border-radius:99px; width:0%; transition:width 0.2s;"></div>
-      </div>
-    </div>
-
-    <!-- Shared progress + status -->
-    <div class="convert-progress" id="convertProgress">
-      <div class="convert-progress-label" id="convertLabel">Converting... please wait</div>
-      <div class="convert-track"><div class="convert-fill" id="convertFill"></div></div>
-    </div>
-    <div class="status" id="status"></div>
-
-    <!-- FAQ Section -->
-    <div style="margin-top:28px; border-top:1px solid #f0f0f0; padding-top:24px;">
-      <h2 style="font-size:16px; font-weight:800; color:#111; margin-bottom:16px;">Frequently Asked Questions</h2>
-      <div>
-
-        <div style="margin-bottom:8px; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
-          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
-            Is ieatpdf.com free to use? <span style="font-size:18px; color:#888;">+</span>
-          </button>
-          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
-            Yes, completely free. No signup, no subscription, no hidden fees. All tools — convert, merge, split, compress, lock and unlock — are 100% free.
-          </div>
-        </div>
-
-        <div style="margin-bottom:8px; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
-          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
-            Are my files safe and private? <span style="font-size:18px; color:#888;">+</span>
-          </button>
-          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
-            Yes. Your files are processed instantly and permanently deleted immediately after conversion. We never store, share, or access your documents. No data is retained.
-          </div>
-        </div>
-
-        <div style="margin-bottom:8px; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
-          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
-            How do I convert a PDF to Word? <span style="font-size:18px; color:#888;">+</span>
-          </button>
-          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
-            Click "Convert PDF", upload your PDF, select DOCX format, choose Image-based (perfect layout) or OCR (editable text), then click Convert. Your Word file downloads instantly.
-          </div>
-        </div>
-
-        <div style="margin-bottom:8px; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
-          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
-            What file formats can I convert a PDF to? <span style="font-size:18px; color:#888;">+</span>
-          </button>
-          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
-            You can convert PDF to Word (DOCX), Excel (XLSX), PowerPoint (PPTX), HTML, JPG, and PNG. You can also convert images, Word, Excel and PowerPoint files back to PDF.
-          </div>
-        </div>
-
-        <div style="margin-bottom:8px; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
-          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
-            How do I merge multiple PDF files into one? <span style="font-size:18px; color:#888;">+</span>
-          </button>
-          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
-            Click the "Merge" tab, upload two or more PDF files, then click "Merge PDFs". All files will be combined into one PDF in the order you uploaded them.
-          </div>
-        </div>
-
-        <div style="margin-bottom:8px; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
-          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
-            How much can I compress a PDF? <span style="font-size:18px; color:#888;">+</span>
-          </button>
-          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
-            It depends on the PDF. Image-heavy PDFs can be reduced by up to 80%. Choose Low, Medium, or High compression depending on how much quality you want to keep.
-          </div>
-        </div>
-
-        <div style="margin-bottom:8px; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
-          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
-            Can I convert Arabic or RTL PDFs? <span style="font-size:18px; color:#888;">+</span>
-          </button>
-          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
-            Yes. ieatpdf.com fully supports Arabic, Hebrew, and other right-to-left languages. Use Image-based mode for perfect layout, or OCR mode to extract editable Arabic text.
-          </div>
-        </div>
-
-        <div style="margin-bottom:0; border:1.5px solid #f0f0f0; border-radius:12px; overflow:hidden;">
-          <button onclick="toggleFaq(this)" style="width:100%; text-align:left; padding:14px 16px; background:white; border:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:14px; font-weight:600; color:#111;">
-            Is there a file size limit? <span style="font-size:18px; color:#888;">+</span>
-          </button>
-          <div style="display:none; padding:0 16px 14px; font-size:13px; color:#555; line-height:1.6;">
-            Yes, the maximum file size is 20MB per file. For larger files, try using the Compress tool first to reduce the file size before converting.
-          </div>
-        </div>
-
-      </div>
-    </div>
-
-    <div style="margin-top:24px; padding:14px 16px; background:#f0fdf4; border:1.5px solid #86efac; border-radius:12px; display:flex; align-items:flex-start; gap:10px;">
-      <span style="font-size:18px; flex-shrink:0;">🔒</span>
-      <div>
-        <div style="font-size:13px; font-weight:700; color:#166534; margin-bottom:3px;">Your privacy is protected</div>
-        <div style="font-size:12px; color:#4b7a5a; line-height:1.5;">Files are processed instantly and <strong>permanently deleted</strong> after conversion. We never store, share, or access your documents. <a href="/privacy" style="color:#166534; font-weight:700; text-decoration:underline;">Privacy Policy →</a></div>
-      </div>
-    </div>
-    <div style="margin-top:20px; padding-top:16px; border-top:1px solid #f0f0f0; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-      <span style="font-size:12px; color:#aaa;">© 2026 ieatpdf.com — All rights reserved</span>
-      <div style="display:flex; gap:16px;">
-        <a href="/privacy" style="font-size:12px; color:#aaa; text-decoration:none;">Privacy Policy</a>
-        <a href="mailto:admin@ieatpdf.com" style="font-size:12px; color:#aaa; text-decoration:none;">Contact</a>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Libraries -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
-
-<script>
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-
-// ── State ──────────────────────────────────────────────────────────────────
-let appMode = 'from-pdf';
-let selectedFile = null, selectedFmt = null, selectedMode = 'image', pdfType = null, pageCount = 1;
-let pdfDoc = null, currentPage = 1, pdfFileUrl = null;
-let toPdfFmt = 'image', toPdfFiles = [], toPdfPreviewFile = null;
-let selectedPages = 'all';
-
-// ── Preview panel helpers ──────────────────────────────────────────────────
-const previewPanel = document.getElementById('previewPanel');
-const previewTitle = document.getElementById('previewTitle');
-const previewLoading = document.getElementById('previewLoading');
-const prevPageBtn = document.getElementById('prevPage');
-const nextPageBtn = document.getElementById('nextPage');
-const pageInfoEl = document.getElementById('pageInfo');
-
-function hideAllPreviews() {
-  ['pdfCanvasWrap','imgPreview','docxPreview','xlsxPreview','pptxPreview'].forEach(id => {
-    document.getElementById(id).style.display = 'none';
-  });
-  previewLoading.style.display = 'none';
-  prevPageBtn.disabled = true;
-  nextPageBtn.disabled = true;
-  pageInfoEl.textContent = '';
-}
-
-function showPreviewLoading(title) {
-  hideAllPreviews();
-  previewLoading.style.display = 'block';
-  previewLoading.textContent = 'Rendering preview...';
-  previewTitle.textContent = title;
-  previewPanel.classList.add('visible');
-}
-
-// ── PDF Preview ────────────────────────────────────────────────────────────
-async function loadPDFPreview(fileOrUrl) {
-  try {
-    if (typeof fileOrUrl === 'string') {
-      pdfDoc = await pdfjsLib.getDocument(fileOrUrl).promise;
-    } else {
-      const ab = await fileOrUrl.arrayBuffer();
-      pdfDoc = await pdfjsLib.getDocument({ data: ab }).promise;
-    }
-    currentPage = 1;
-    prevPageBtn.disabled = true;
-    nextPageBtn.disabled = pdfDoc.numPages <= 1;
-    await renderPDFPage(1);
-  } catch(e) {
-    previewLoading.textContent = 'Preview unavailable';
-  }
-}
-
-async function renderPDFPage(num) {
-  previewLoading.style.display = 'block';
-  document.getElementById('pdfCanvasWrap').style.display = 'none';
-  const page = await pdfDoc.getPage(num);
-  const body = document.getElementById('previewBody');
-  const maxW = body.clientWidth - 24;
-  const vp = page.getViewport({ scale: 1 });
-  const scale = Math.min(maxW / vp.width, 2);
-  const scaledVp = page.getViewport({ scale });
-  const canvas = document.getElementById('pdfCanvas');
-  canvas.width = scaledVp.width;
-  canvas.height = scaledVp.height;
-  await page.render({ canvasContext: canvas.getContext('2d'), viewport: scaledVp }).promise;
-  previewLoading.style.display = 'none';
-  document.getElementById('pdfCanvasWrap').style.display = 'block';
-  pageInfoEl.textContent = `${num} / ${pdfDoc.numPages}`;
-  prevPageBtn.disabled = num <= 1;
-  nextPageBtn.disabled = num >= pdfDoc.numPages;
-}
-
-prevPageBtn.addEventListener('click', async () => {
-  if (currentPage > 1) { currentPage--; await renderPDFPage(currentPage); }
-});
-nextPageBtn.addEventListener('click', async () => {
-  if (pdfDoc && currentPage < pdfDoc.numPages) { currentPage++; await renderPDFPage(currentPage); }
-});
-document.addEventListener('keydown', e => {
-  if (!previewPanel.classList.contains('visible')) return;
-  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') nextPageBtn.click();
-  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') prevPageBtn.click();
-});
-
-// ── Image Preview — navigate through multiple uploaded images ─────────────
-let imagePreviewIndex = 0;
-let imagePreviewFiles = [];
-
-function loadImagePreview(files, index) {
-  imagePreviewFiles = Array.isArray(files) ? files : [files];
-  imagePreviewIndex = index || 0;
-  const file = imagePreviewFiles[imagePreviewIndex];
-  const url = URL.createObjectURL(file);
-  const img = document.getElementById('imgPreview');
-  img.onload = () => {
-    previewLoading.style.display = 'none';
-    img.style.display = 'block';
-    URL.revokeObjectURL(url);
-  };
-  img.src = url;
-  // Update navigation
-  const total = imagePreviewFiles.length;
-  if (total > 1) {
-    pageInfoEl.textContent = `${imagePreviewIndex + 1} / ${total}`;
-    prevPageBtn.disabled = imagePreviewIndex <= 0;
-    nextPageBtn.disabled = imagePreviewIndex >= total - 1;
-    // Override nav buttons for image mode
-    prevPageBtn.onclick = () => {
-      if (imagePreviewIndex > 0) {
-        hideAllPreviews();
-        previewLoading.style.display = 'block';
-        loadImagePreview(imagePreviewFiles, imagePreviewIndex - 1);
-      }
-    };
-    nextPageBtn.onclick = () => {
-      if (imagePreviewIndex < imagePreviewFiles.length - 1) {
-        hideAllPreviews();
-        previewLoading.style.display = 'block';
-        loadImagePreview(imagePreviewFiles, imagePreviewIndex + 1);
-      }
-    };
-  } else {
-    pageInfoEl.textContent = '';
-    prevPageBtn.disabled = true;
-    nextPageBtn.disabled = true;
-  }
-}
-
-// ── DOCX Preview (using mammoth.js) ───────────────────────────────────────
-async function loadDocxPreview(file) {
-  try {
-    const ab = await file.arrayBuffer();
-    const result = await mammoth.convertToHtml({ arrayBuffer: ab });
-    const container = document.getElementById('docxPreview');
-    container.innerHTML = result.value;
-    previewLoading.style.display = 'none';
-    container.style.display = 'block';
-  } catch(e) {
-    previewLoading.textContent = 'DOCX preview unavailable';
-  }
-}
-
-// ── XLSX Preview — with sheet tab navigation ───────────────────────────────
-let xlsxWorkbook = null;
-let xlsxSheetIndex = 0;
-
-async function loadXlsxPreview(file) {
-  try {
-    const ab = await file.arrayBuffer();
-    xlsxWorkbook = XLSX.read(ab, { type: 'array' });
-    xlsxSheetIndex = 0;
-    renderXlsxSheet(0);
-  } catch(e) {
-    previewLoading.textContent = 'XLSX preview unavailable';
-  }
-}
-
-function renderXlsxSheet(idx) {
-  const wb = xlsxWorkbook;
-  const sheetName = wb.SheetNames[idx];
-  const ws = wb.Sheets[sheetName];
-  const html = XLSX.utils.sheet_to_html(ws, { editable: false });
-  const container = document.getElementById('xlsxPreview');
-
-  // Build sheet tabs
-  let tabsHtml = '<div style="display:flex;gap:4px;padding:8px 8px 0;background:#f0f0f0;flex-wrap:wrap;">';
-  wb.SheetNames.forEach((name, i) => {
-    const active = i === idx;
-    tabsHtml += `<button onclick="renderXlsxSheet(${i})" style="padding:4px 10px;border:1px solid #ccc;border-radius:6px 6px 0 0;background:${active?'white':'#e8e8e8'};font-weight:${active?'700':'400'};font-size:11px;cursor:pointer;border-bottom:${active?'2px solid #4f46e5':'1px solid #ccc'};color:${active?'#4f46e5':'#555'}">${name}</button>`;
-  });
-  tabsHtml += '</div>';
-
-  container.innerHTML = tabsHtml + `<div style="overflow:auto;padding:8px;">${html}</div>`;
-
-  // Style the table
-  const table = container.querySelector('table');
-  if (table) {
-    table.style.borderCollapse = 'collapse';
-    table.style.fontSize = '12px';
-    table.style.width = '100%';
-    table.querySelectorAll('td,th').forEach(cell => {
-      cell.style.border = '1px solid #ddd';
-      cell.style.padding = '4px 8px';
-      cell.style.whiteSpace = 'nowrap';
-    });
-  }
-
-  previewLoading.style.display = 'none';
-  container.style.display = 'block';
-
-  // Update nav info
-  if (wb.SheetNames.length > 1) {
-    pageInfoEl.textContent = `Sheet ${idx+1} / ${wb.SheetNames.length}`;
-    prevPageBtn.disabled = idx <= 0;
-    nextPageBtn.disabled = idx >= wb.SheetNames.length - 1;
-    prevPageBtn.onclick = () => { if(xlsxSheetIndex>0){xlsxSheetIndex--;renderXlsxSheet(xlsxSheetIndex);} };
-    nextPageBtn.onclick = () => { if(xlsxSheetIndex<wb.SheetNames.length-1){xlsxSheetIndex++;renderXlsxSheet(xlsxSheetIndex);} };
-  } else {
-    pageInfoEl.textContent = '';
-    prevPageBtn.disabled = true;
-    nextPageBtn.disabled = true;
-  }
-}
-
-// ── PPTX Preview — server renders each slide on demand ────────────────────
-let pptxFile = null;
-let pptxCurrentSlide = 1;
-let pptxTotalSlides = 1;
-
-async function loadPptxSlide(file, slideNum) {
-  try {
-    previewLoading.style.display = 'block';
-    document.getElementById('imgPreview').style.display = 'none';
-    const fd = new FormData();
-    fd.append('file', file);
-    fd.append('slide', slideNum);
-    const res = await fetch('/preview-pptx', { method: 'POST', body: fd });
-    if (!res.ok) throw new Error('Server render failed');
-    // Get total slides from response header
-    const total = parseInt(res.headers.get('X-Total-Slides') || '1');
-    pptxTotalSlides = total;
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const img = document.getElementById('imgPreview');
-    img.onload = () => {
-      previewLoading.style.display = 'none';
-      img.style.display = 'block';
-      URL.revokeObjectURL(url);
-    };
-    img.src = url;
-    // Update navigation
-    pageInfoEl.textContent = `Slide ${slideNum} / ${total}`;
-    prevPageBtn.disabled = slideNum <= 1;
-    nextPageBtn.disabled = slideNum >= total;
-    prevPageBtn.onclick = async () => {
-      if (pptxCurrentSlide > 1) { pptxCurrentSlide--; await loadPptxSlide(pptxFile, pptxCurrentSlide); }
-    };
-    nextPageBtn.onclick = async () => {
-      if (pptxCurrentSlide < pptxTotalSlides) { pptxCurrentSlide++; await loadPptxSlide(pptxFile, pptxCurrentSlide); }
-    };
-  } catch(e) {
-    previewLoading.textContent = 'Preview unavailable';
-  }
-}
-
-async function loadPptxPreview(file) {
-  pptxFile = file;
-  pptxCurrentSlide = 1;
-  await loadPptxSlide(file, 1);
-}
-
-// ── Master preview dispatcher ──────────────────────────────────────────────
-async function showPreview(fileOrFiles, type) {
-  const file = Array.isArray(fileOrFiles) ? fileOrFiles[0] : fileOrFiles;
-  showPreviewLoading(file.name);
-  hideAllPreviews();
-  previewLoading.style.display = 'block';
-
-  if (type === 'pdf') {
-    if (pdfFileUrl) URL.revokeObjectURL(pdfFileUrl);
-    pdfFileUrl = URL.createObjectURL(file);
-    // Reset PDF nav to default
-    prevPageBtn.onclick = async () => { if(currentPage>1){currentPage--;await renderPDFPage(currentPage);} };
-    nextPageBtn.onclick = async () => { if(pdfDoc&&currentPage<pdfDoc.numPages){currentPage++;await renderPDFPage(currentPage);} };
-    await loadPDFPreview(pdfFileUrl);
-  } else if (type === 'image') {
-    loadImagePreview(Array.isArray(fileOrFiles) ? fileOrFiles : [file], 0);
-  } else if (type === 'docx') {
-    await loadDocxPreview(file);
-  } else if (type === 'xlsx') {
-    await loadXlsxPreview(file);
-  } else if (type === 'pptx') {
-    await loadPptxPreview(file);
-  }
-}
-
-// ── App Mode Toggle ────────────────────────────────────────────────────────
-let subMode = 'from-pdf';
-
-function setAppMode(mode) {
-  appMode = mode;
-  const sections = ['convertSection','mergeSection','splitSection','compressSection','lockSection','unlockSection'];
-  const btns = ['btnFromPdf','btnMerge','btnSplit','btnCompress','btnLock','btnUnlock'];
-  const modes = ['from-pdf','merge','split','compress','lock','unlock'];
-  sections.forEach(s => document.getElementById(s).style.display = 'none');
-  btns.forEach(b => document.getElementById(b).classList.remove('active'));
-  const idx = modes.indexOf(mode);
-  if (idx >= 0) {
-    document.getElementById(sections[idx]).style.display = 'block';
-    document.getElementById(btns[idx]).classList.add('active');
-  }
-  const subtitles = {
-    'from-pdf': 'Convert your PDF to Word, Excel, PowerPoint, HTML, or images instantly',
-    'merge': 'Combine multiple PDF files into one document',
-    'split': 'Split a PDF into separate files by page range',
-    'compress': 'Reduce your PDF file size while keeping quality',
-    'lock': 'Password protect your PDF — only people with the password can open it',
-    'unlock': 'Remove password protection from your PDF',
-  };
-  document.getElementById('subtitleText').textContent = subtitles[mode] || '';
-  previewPanel.classList.remove('visible');
-  hideAllPreviews();
-  document.getElementById('status').style.display = 'none';
-  document.getElementById('convertProgress').style.display = 'none';
-}
-
-function setSubMode(mode) {
-  subMode = mode;
-  const fromActive = mode === 'from-pdf';
-  const sub1 = document.getElementById('subBtnFromPdf');
-  const sub2 = document.getElementById('subBtnToPdf');
-  sub1.style.borderColor = fromActive ? '#6366f1' : '#e5e7eb';
-  sub1.style.background = fromActive ? '#eef2ff' : 'white';
-  sub1.style.color = fromActive ? '#4f46e5' : '#888';
-  sub2.style.borderColor = !fromActive ? '#6366f1' : '#e5e7eb';
-  sub2.style.background = !fromActive ? '#eef2ff' : 'white';
-  sub2.style.color = !fromActive ? '#4f46e5' : '#888';
-  document.getElementById('fromPdfSection').style.display = fromActive ? 'block' : 'none';
-  document.getElementById('toPdfSection').style.display = !fromActive ? 'block' : 'none';
-  previewPanel.classList.remove('visible');
-  document.getElementById('status').style.display = 'none';
-}
-
-// ── MERGE ──────────────────────────────────────────────────────────────────
-let mergeFiles = [];
-const mergeDropZone = document.getElementById('mergeDropZone');
-const mergeFileInput = document.getElementById('mergeFileInput');
-const mergeBtn = document.getElementById('mergeBtn');
-
-mergeDropZone.addEventListener('click', () => mergeFileInput.click());
-mergeDropZone.addEventListener('dragover', e => { e.preventDefault(); mergeDropZone.classList.add('drag-over'); });
-mergeDropZone.addEventListener('dragleave', () => mergeDropZone.classList.remove('drag-over'));
-mergeDropZone.addEventListener('drop', e => { e.preventDefault(); mergeDropZone.classList.remove('drag-over'); addMergeFiles(e.dataTransfer.files); });
-mergeFileInput.addEventListener('change', e => { addMergeFiles(e.target.files); mergeFileInput.value = ''; });
-
-function addMergeFiles(fileList) {
-  Array.from(fileList).forEach(f => {
-    if (f.name.toLowerCase().endsWith('.pdf')) mergeFiles.push(f);
-  });
-  renderMergeList();
-  mergeBtn.disabled = true; // Always disabled until all files pass encryption check
-  checkMergeEncryption();
-}
-
-async function checkMergeEncryption() {
-  for (let i = 0; i < mergeFiles.length; i++) {
-    showUploadProgress(`Checking file ${i+1} of ${mergeFiles.length}...`);
-    const fd = new FormData(); fd.append('file', mergeFiles[i]);
-    try {
-      const r = await fetchWithProgress('/detect', fd, pct => updateUploadProgress(pct, `Uploading ${i+1}/${mergeFiles.length}... ${pct}%`));
-      const d = await r.json();
-      if (d.is_encrypted) {
-        hideUploadProgress();
-        showStatus('error', `❌ "${mergeFiles[i].name}" is password protected. Please unlock it first before merging.`);
-        mergeFiles.splice(i, 1);
-        renderMergeList();
-        mergeBtn.disabled = mergeFiles.length < 2;
-        return;
-      }
-    } catch(e) {}
-  }
-  updateUploadProgress(100, 'Ready ✓');
-  hideUploadProgress();
-  mergeBtn.disabled = mergeFiles.length < 2; // Enable only after all checks pass
-}
-
-function renderMergeList() {
-  const list = document.getElementById('mergeFilesList');
-  if (mergeFiles.length === 0) { list.style.display = 'none'; return; }
-  list.style.display = 'flex';
-  list.innerHTML = mergeFiles.map((f, i) => `
-    <div class="file-item">
-      <span style="color:#888; font-size:13px; flex-shrink:0;">${i+1}.</span>
-      <span class="fname">📄 ${f.name}</span>
-      <span class="fsize">${formatBytes(f.size)}</span>
-      <button class="remove-file" onclick="removeMergeFile(${i})">✕</button>
-    </div>`).join('');
-  // Show preview of first PDF
-  if (mergeFiles.length > 0) showPreview(mergeFiles[0], 'pdf');
-}
-
-function removeMergeFile(idx) {
-  mergeFiles.splice(idx, 1);
-  renderMergeList();
-  mergeBtn.disabled = mergeFiles.length < 2;
-  if (mergeFiles.length === 0) previewPanel.classList.remove('visible');
-}
-
-mergeBtn.addEventListener('click', async () => {
-  if (mergeFiles.length < 2) return;
-  mergeBtn.disabled = true; status.style.display = 'none';
-  // Show merging progress with custom label
-  document.getElementById('convertProgress').style.display = 'flex';
-  document.getElementById('convertFill').style.width = '0%';
-  document.getElementById('convertLabel').textContent = 'Merging PDFs... please wait ⏳';
-  let pct = 0;
-  convertTimer = setInterval(() => {
-    if (pct < 85) { pct += Math.random() * 8; document.getElementById('convertFill').style.width = Math.min(pct, 85) + '%'; }
-  }, 400);
-  const fd = new FormData();
-  mergeFiles.forEach(f => fd.append('files', f));
-  try {
-    const res = await fetch('/merge', { method: 'POST', body: fd });
-    if (!res.ok) { const d = await res.json(); finishConvertProgress(false); showStatus('error', '❌ ' + (d.error || 'Merge failed.')); return; }
-    const blob = await res.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
-    a.href = url; a.download = 'merged.pdf';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-    finishConvertProgress(true); showStatus('success', `✅ Done! ${mergeFiles.length} PDFs merged successfully.`);
-  } catch(e) { finishConvertProgress(false); showStatus('error', '❌ Something went wrong.'); }
-  finally { mergeBtn.disabled = mergeFiles.length < 2; }
-});
-
-// ── SPLIT ──────────────────────────────────────────────────────────────────
-let splitFile = null, splitType = 'all', splitPageCount = 1;
-const splitDropZone = document.getElementById('splitDropZone');
-const splitFileInput = document.getElementById('splitFileInput');
-const splitBtn = document.getElementById('splitBtn');
-
-splitDropZone.addEventListener('click', () => splitFileInput.click());
-splitDropZone.addEventListener('dragover', e => { e.preventDefault(); splitDropZone.classList.add('drag-over'); });
-splitDropZone.addEventListener('dragleave', () => splitDropZone.classList.remove('drag-over'));
-splitDropZone.addEventListener('drop', e => { e.preventDefault(); splitDropZone.classList.remove('drag-over'); setSplitFile(e.dataTransfer.files[0]); });
-splitFileInput.addEventListener('change', e => { setSplitFile(e.target.files[0]); splitFileInput.value = ''; });
-document.getElementById('splitRemoveFile').addEventListener('click', () => {
-  splitFile = null;
-  document.getElementById('splitFileSelected').style.display = 'none';
-  document.getElementById('splitOptions').style.display = 'none';
-  splitDropZone.style.display = 'block';
-  splitBtn.disabled = true;
-  previewPanel.classList.remove('visible');
-});
-
-async function setSplitFile(f) {
-  if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
-  showUploadProgress('Uploading & analyzing...');
-  // Check encryption first
-  const fd0 = new FormData(); fd0.append('file', f);
-  try {
-    const r = await fetchWithProgress('/detect', fd0, (pct) => updateUploadProgress(pct, `Uploading... ${pct}%`));
-    const d = await r.json();
-    updateUploadProgress(100, 'Upload complete ✓');
-    hideUploadProgress();
-    if (d.is_encrypted) {
-      showStatus('error', '❌ This PDF is password protected. Please unlock it first before splitting.');
-      return;
-    }
-    splitPageCount = d.page_count || 1;
-  } catch(e) { hideUploadProgress(); }
-  splitFile = f;
-  document.getElementById('splitFileName').textContent = f.name;
-  document.getElementById('splitFileSize').textContent = formatBytes(f.size);
-  document.getElementById('splitFileSelected').style.display = 'flex';
-  splitDropZone.style.display = 'none';
-  document.getElementById('splitOptions').style.display = 'block';
-  splitBtn.disabled = false;
-  setSplitType('all');
-  document.getElementById('splitPageHint').textContent = `This PDF has ${splitPageCount} pages`;
-  document.getElementById('splitAtHint').textContent = `Enter a page number between 2 and ${splitPageCount}`;
-  document.getElementById('splitAtVal').max = splitPageCount;
-  showPreview(f, 'pdf');
-}
-
-function setSplitType(type) {
-  splitType = type;
-  const opts = ['All', 'Range', 'At'];
-  const ids = ['splitOptAll', 'splitOptRange', 'splitOptAt'];
-  ids.forEach((id, i) => {
-    const el = document.getElementById(id);
-    const active = ['all','range','at'][i] === type;
-    el.style.borderColor = active ? '#6366f1' : '#e5e7eb';
-    el.style.background = active ? '#eef2ff' : 'white';
-    el.querySelector('span').style.color = active ? '#4f46e5' : '#333';
-  });
-  document.getElementById('splitRangeInput').style.display = type === 'range' ? 'block' : 'none';
-  document.getElementById('splitAtInput').style.display = type === 'at' ? 'block' : 'none';
-}
-
-function validateSplitRange() {
-  const raw = document.getElementById('splitRangeVal').value.trim();
-  const err = document.getElementById('splitRangeError');
-  const inp = document.getElementById('splitRangeVal');
-  if (!raw) { err.style.display='none'; inp.style.borderColor='#e5e7eb'; return true; }
-  for (let part of raw.split(',')) {
-    part = part.trim();
-    if (/^\d+$/.test(part)) {
-      const n = parseInt(part);
-      if (n < 1) { err.textContent=`❌ Page numbers must be 1 or greater.`; err.style.display='block'; inp.style.borderColor='#dc2626'; return false; }
-      if (n > splitPageCount) { err.textContent=`❌ Page ${n} doesn't exist. This PDF only has ${splitPageCount} pages.`; err.style.display='block'; inp.style.borderColor='#dc2626'; return false; }
-    } else if (/^\d+-\d+$/.test(part)) {
-      const [s, e] = part.split('-').map(Number);
-      if (s < 1 || e < 1) { err.textContent=`❌ Page numbers must be 1 or greater.`; err.style.display='block'; inp.style.borderColor='#dc2626'; return false; }
-      if (s > e) { err.textContent=`❌ Invalid range "${part}" — start must be less than end.`; err.style.display='block'; inp.style.borderColor='#dc2626'; return false; }
-      if (e > splitPageCount) { err.textContent=`❌ Page ${e} doesn't exist. This PDF only has ${splitPageCount} pages.`; err.style.display='block'; inp.style.borderColor='#dc2626'; return false; }
-    } else {
-      err.textContent=`❌ Invalid format "${part}". Use numbers or ranges like 1-3.`; err.style.display='block'; inp.style.borderColor='#dc2626'; return false;
-    }
-  }
-  err.style.display='none'; inp.style.borderColor='#22c55e'; return true;
-}
-
-function validateSplitAt() {
-  const val = parseInt(document.getElementById('splitAtVal').value);
-  const err = document.getElementById('splitAtError');
-  const inp = document.getElementById('splitAtVal');
-  if (!val) { err.style.display='none'; inp.style.borderColor='#e5e7eb'; return true; }
-  if (val < 2) { err.textContent=`❌ Must be at least page 2 to split.`; err.style.display='block'; inp.style.borderColor='#dc2626'; return false; }
-  if (val > splitPageCount) { err.textContent=`❌ Page ${val} doesn't exist. This PDF only has ${splitPageCount} pages.`; err.style.display='block'; inp.style.borderColor='#dc2626'; return false; }
-  err.style.display='none'; inp.style.borderColor='#22c55e'; return true;
-}
-
-splitBtn.addEventListener('click', async () => {
-  if (!splitFile) return;
-  // Validate inputs
-  if (splitType === 'range') {
-    const raw = document.getElementById('splitRangeVal').value.trim();
-    if (!raw) { showStatus('error', '❌ Please enter page ranges.'); return; }
-    if (!validateSplitRange()) { showStatus('error', '❌ Please fix the range errors.'); return; }
-  }
-  if (splitType === 'at') {
-    const val = document.getElementById('splitAtVal').value.trim();
-    if (!val) { showStatus('error', '❌ Please enter a page number to split at.'); return; }
-    if (!validateSplitAt()) { showStatus('error', '❌ Please fix the split page error.'); return; }
-  }
-  splitBtn.disabled = true; status.style.display = 'none'; startConvertProgress();
-  const fd = new FormData();
-  fd.append('file', splitFile);
-  if (splitType === 'at') {
-    // Convert "split at page N" to two ranges: 1-(N-1) and N-end
-    const n = parseInt(document.getElementById('splitAtVal').value);
-    fd.append('split_type', 'range');
-    fd.append('pages', `1-${n-1}, ${n}-${splitPageCount}`);
-  } else {
-    fd.append('split_type', splitType);
-    if (splitType === 'range') fd.append('pages', document.getElementById('splitRangeVal').value.trim());
-  }
-  try {
-    const res = await fetch('/split', { method: 'POST', body: fd });
-    if (!res.ok) { const d = await res.json(); finishConvertProgress(false); showStatus('error', '❌ ' + (d.error || 'Split failed.')); return; }
-    const blob = await res.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
-    a.href = url;
-    const cd = res.headers.get('Content-Disposition') || '';
-    a.download = cd.match(/filename="?([^"]+)"?/)?.[1] || 'split_pages.zip';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-    finishConvertProgress(true); showStatus('success', '✅ Done! PDF split successfully.');
-  } catch(e) { finishConvertProgress(false); showStatus('error', '❌ Something went wrong.'); }
-  finally { splitBtn.disabled = false; }
-});
-
-// ── COMPRESS ───────────────────────────────────────────────────────────────
-let compressFile = null, compressLevel = 'medium';
-const compressDropZone = document.getElementById('compressDropZone');
-const compressFileInput = document.getElementById('compressFileInput');
-const compressBtn = document.getElementById('compressBtn');
-
-compressDropZone.addEventListener('click', () => compressFileInput.click());
-compressDropZone.addEventListener('dragover', e => { e.preventDefault(); compressDropZone.classList.add('drag-over'); });
-compressDropZone.addEventListener('dragleave', () => compressDropZone.classList.remove('drag-over'));
-compressDropZone.addEventListener('drop', e => { e.preventDefault(); compressDropZone.classList.remove('drag-over'); setCompressFile(e.dataTransfer.files[0]); });
-compressFileInput.addEventListener('change', e => { setCompressFile(e.target.files[0]); compressFileInput.value = ''; });
-document.getElementById('compressRemoveFile').addEventListener('click', () => {
-  compressFile = null;
-  document.getElementById('compressFileSelected').style.display = 'none';
-  document.getElementById('compressOptions').style.display = 'none';
-  compressDropZone.style.display = 'block';
-  compressBtn.disabled = true;
-  previewPanel.classList.remove('visible');
-});
-
-async function setCompressFile(f) {
-  if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
-  showUploadProgress('Uploading & analyzing...');
-  const fd0 = new FormData(); fd0.append('file', f);
-  try {
-    const r = await fetchWithProgress('/detect', fd0, pct => updateUploadProgress(pct, `Uploading... ${pct}%`));
-    const d = await r.json();
-    updateUploadProgress(100, 'Upload complete ✓'); hideUploadProgress();
-    if (d.is_encrypted) { showStatus('error', '❌ This PDF is password protected. Please unlock it first before compressing.'); return; }
-  } catch(e) { hideUploadProgress(); }
-  compressFile = f;
-  document.getElementById('compressFileName').textContent = f.name;
-  document.getElementById('compressFileSize').textContent = formatBytes(f.size);
-  document.getElementById('compressFileSelected').style.display = 'flex';
-  compressDropZone.style.display = 'none';
-  document.getElementById('compressOptions').style.display = 'block';
-  compressBtn.disabled = false;
-  showPreview(f, 'pdf');
-}
-
-function setCompressLevel(level) {
-  compressLevel = level;
-  ['Low','Medium','High'].forEach(l => {
-    const el = document.getElementById('compress'+l);
-    const active = l.toLowerCase() === level;
-    el.style.borderColor = active ? '#6366f1' : '#e5e7eb';
-    el.style.background = active ? '#eef2ff' : 'white';
-    el.querySelector('span:nth-child(2)').style.color = active ? '#4f46e5' : '#333';
-  });
-}
-
-compressBtn.addEventListener('click', async () => {
-  if (!compressFile) return;
-  compressBtn.disabled = true; status.style.display = 'none'; startConvertProgress();
-  const fd = new FormData();
-  fd.append('file', compressFile);
-  fd.append('level', compressLevel);
-  try {
-    const res = await fetch('/compress', { method: 'POST', body: fd });
-    if (!res.ok) { const d = await res.json(); finishConvertProgress(false); showStatus('error', '❌ ' + (d.error || 'Compression failed.')); return; }
-    const origSize = parseInt(res.headers.get('X-Original-Size') || '0');
-    const compSize = parseInt(res.headers.get('X-Compressed-Size') || '0');
-    const reduction = res.headers.get('X-Reduction') || '0';
-    const blob = await res.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
-    a.href = url; a.download = 'compressed.pdf';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-    finishConvertProgress(true);
-    const msg = reduction > 0
-      ? `✅ Done! Reduced from ${formatBytes(origSize)} to ${formatBytes(compSize)} (${reduction}% smaller)`
-      : `✅ Done! This PDF is already optimized — no further compression possible.`;
-    showStatus('success', msg);
-  } catch(e) { finishConvertProgress(false); showStatus('error', '❌ Something went wrong.'); }
-  finally { compressBtn.disabled = false; }
-});
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-function formatBytes(b) {
-  if (b < 1024) return b + ' B';
-  if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
-  return (b/1024/1024).toFixed(2) + ' MB';
-}
-function countSelectedPages(raw) {
-  let c = 0;
-  raw.split(',').forEach(p => {
-    p = p.trim();
-    if (/^\d+$/.test(p)) c++;
-    else if (/^\d+-\d+$/.test(p)) { const [s,e]=p.split('-').map(Number); if(e>=s) c+=e-s+1; }
-  });
-  return c;
-}
-const status = document.getElementById('status');
-function showStatus(type, msg) { status.className='status '+type; status.style.display='block'; status.textContent=msg; }
-
-let convertTimer = null;
-function startConvertProgress() {
-  const cp=document.getElementById('convertProgress'), cf=document.getElementById('convertFill'), cl=document.getElementById('convertLabel');
-  cp.style.display='flex'; cf.style.width='0%'; cl.textContent='Converting... please wait ⏳';
-  let pct=0;
-  convertTimer=setInterval(()=>{ if(pct<85){pct+=Math.random()*8; cf.style.width=Math.min(pct,85)+'%'; } },400);
-}
-function finishConvertProgress(success) {
-  clearInterval(convertTimer);
-  document.getElementById('convertFill').style.width='100%';
-  document.getElementById('convertLabel').textContent=success?'Done! ✅':'Failed ❌';
-  setTimeout(()=>{ document.getElementById('convertProgress').style.display='none'; },1000);
-}
-
-// ── FROM-PDF Mode ──────────────────────────────────────────────────────────
-const dropZone = document.getElementById('dropZone');
-const fileInput = document.getElementById('fileInput');
-const convertBtn = document.getElementById('convertBtn');
-
-dropZone.addEventListener('click', ()=>fileInput.click());
-dropZone.addEventListener('dragover', e=>{e.preventDefault();dropZone.classList.add('drag-over');});
-dropZone.addEventListener('dragleave', ()=>dropZone.classList.remove('drag-over'));
-dropZone.addEventListener('drop', e=>{e.preventDefault();dropZone.classList.remove('drag-over');setFile(e.dataTransfer.files[0]);});
-fileInput.addEventListener('change', e=>setFile(e.target.files[0]));
-
-document.getElementById('removeFile').addEventListener('click', ()=>{
-  selectedFile=null; pdfType=null; pdfDoc=null;
-  if(pdfFileUrl){URL.revokeObjectURL(pdfFileUrl);pdfFileUrl=null;}
-  fileInput.value='';
-  document.getElementById('fileSelected').style.display='none';
-  dropZone.style.display='block';
-  document.getElementById('detectBanner').style.display='none';
-  document.getElementById('lockedBanner').style.display='none';
-  document.getElementById('modeSelector').style.display='none';
-  document.querySelectorAll('#formats .fmt').forEach(e=>{e.style.pointerEvents='';e.style.opacity='';});
-  previewPanel.classList.remove('visible');
-  selectedMode='image'; status.style.display='none'; updateConvertBtn();
-});
-
-function showUploadProgress(label) {
-  const bar = document.getElementById('uploadProgressShared');
-  const fill = document.getElementById('uploadFillShared');
-  const lbl = document.getElementById('uploadLabelShared');
-  bar.style.display = 'flex';
-  fill.style.width = '0%';
-  lbl.textContent = label || 'Uploading...';
-}
-
-function updateUploadProgress(pct, label) {
-  const fill = document.getElementById('uploadFillShared');
-  const lbl = document.getElementById('uploadLabelShared');
-  fill.style.width = pct + '%';
-  if (label) lbl.textContent = label;
-}
-
-function hideUploadProgress() {
-  setTimeout(() => {
-    document.getElementById('uploadProgressShared').style.display = 'none';
-  }, 800);
-}
-
-function goToUnlock() { setAppMode('unlock'); }
-
-function toggleFaq(btn) {
-  const answer = btn.nextElementSibling;
-  const icon = btn.querySelector('span');
-  const isOpen = answer.style.display === 'block';
-  answer.style.display = isOpen ? 'none' : 'block';
-  icon.textContent = isOpen ? '+' : '−';
-  icon.style.color = isOpen ? '#888' : '#4f46e5';
-}
-
-async function setFile(f) {
-  if(!f||!f.name.toLowerCase().endsWith('.pdf')){showStatus('error','⚠️ Please upload a PDF file.');return;}
-  if(f.size>20*1024*1024){showStatus('error','⚠️ File too large. Max size is 20MB.');return;}
-  selectedFile=f;
-  document.getElementById('fileName').textContent=f.name;
-  document.getElementById('fileSize').textContent=formatBytes(f.size);
-  document.getElementById('fileSelected').style.display='flex';
-  dropZone.style.display='none';
-  status.style.display='none';
-  document.getElementById('detectBanner').style.display='none';
-  document.getElementById('modeSelector').style.display='none';
-  selectedMode='image';
-
-  // Show PDF preview immediately
-  showPreview(f, 'pdf');
-
-  const upP=document.getElementById('uploadProgress'), upF=document.getElementById('uploadFill'), upL=document.getElementById('uploadLabel');
-  upP.style.display='flex'; upF.style.width='0%'; upL.textContent='Analyzing...';
-  const fd=new FormData(); fd.append('file',f);
-  const xhr=new XMLHttpRequest();
-  xhr.upload.addEventListener('progress', e=>{
-    if(e.lengthComputable){const p=Math.round(e.loaded/e.total*100);upF.style.width=p+'%';upL.textContent=`Uploading... ${p}%`;}
-  });
-  xhr.onload=function(){
-    upF.style.width='100%'; upL.textContent='Upload complete ✓';
-    setTimeout(()=>{upP.style.display='none';},800);
-    try {
-      const d = JSON.parse(xhr.responseText);
-      if (d.is_encrypted) {
-        // PDF is locked — show banner, block all actions
-        document.getElementById('lockedBanner').style.display = 'block';
-        document.getElementById('detectBanner').style.display = 'none';
-        document.getElementById('modeSelector').style.display = 'none';
-        document.getElementById('pageSelector').style.display = 'none';
-        document.querySelectorAll('#formats .fmt').forEach(e => { e.style.pointerEvents='none'; e.style.opacity='0.4'; });
-        convertBtn.disabled = true;
-        convertBtn.textContent = '🔐 PDF is locked — unlock it first';
-        return;
-      }
-      // Normal PDF
-      document.getElementById('lockedBanner').style.display = 'none';
-      document.querySelectorAll('#formats .fmt').forEach(e => { e.style.pointerEvents=''; e.style.opacity=''; });
-      pdfType=d.type; pageCount=d.page_count||1;
-      showDetectionBanner(pdfType); checkModeSelector(); checkPageSelector();
-    } catch(e) {}
-    updateConvertBtn();
-  };
-  xhr.onerror=function(){upP.style.display='none';updateConvertBtn();};
-  xhr.open('POST','/detect'); xhr.send(fd);
-}
-
-function showDetectionBanner(type) {
-  const b=document.getElementById('detectBanner'); b.style.display='block';
-  if(type==='text'){b.className='detect-banner text-pdf';b.innerHTML='<div class="banner-title">📝 Text-based PDF</div><div class="banner-sub">This PDF has a real text layer — text extraction will be accurate.</div>';}
-  else if(type==='scanned'){b.className='detect-banner scanned-pdf';b.innerHTML='<div class="banner-title">🖼️ Scanned / Image-only PDF</div><div class="banner-sub">No text layer detected — OCR will be needed to extract text.</div>';}
-  else{b.className='detect-banner mixed-pdf';b.innerHTML='<div class="banner-title">📝🖼️ Mixed PDF — Text & Images</div><div class="banner-sub">Contains both text and images. Image-based conversion preserves full layout.</div>';}
-}
-
-function checkModeSelector() {
-  const ms=document.getElementById('modeSelector');
-  if(selectedFmt==='docx'||selectedFmt==='pptx'){ms.style.display='block';renderModeOptions();}
-  else ms.style.display='none';
-}
-
-function renderModeOptions() {
-  const mo=document.getElementById('modeOptions');
-  const iR=pdfType==='scanned'||pdfType==='mixed', oR=pdfType==='text';
-  mo.innerHTML=`
-    <div class="mode-opt ${selectedMode==='image'?'active':''}" data-mode="image">
-      ${iR?'<span class="recommended-badge">Recommended</span>':''}
-      <span class="mode-title">🖼️ Image-based</span>
-      <span class="mode-desc">Looks identical to original. Not editable but perfect layout.</span>
-    </div>
-    <div class="mode-opt ${selectedMode==='ocr'?'active':''}" data-mode="ocr">
-      ${oR?'<span class="recommended-badge">Recommended</span>':''}
-      <span class="mode-title">🔍 OCR (editable)</span>
-      <span class="mode-desc">Extracts text so you can edit it. Layout may not be perfect.</span>
-      <span style="font-size:10px;color:#dc2626;display:block;margin-top:6px;">⚠️ Colors, images & layout will not be preserved.</span>
-    </div>`;
-  selectedMode=iR?'image':'ocr';
-  document.querySelectorAll('.mode-opt').forEach(el=>{
-    el.addEventListener('click',()=>{document.querySelectorAll('.mode-opt').forEach(e=>e.classList.remove('active'));el.classList.add('active');selectedMode=el.dataset.mode;});
-  });
-}
-
-document.querySelectorAll('#formats .fmt').forEach(el=>{
-  el.addEventListener('click',()=>{
-    document.querySelectorAll('#formats .fmt').forEach(e=>e.classList.remove('active'));
-    el.classList.add('active'); selectedFmt=el.dataset.fmt;
-    checkModeSelector(); checkPageSelector(); updateConvertBtn();
-  });
-});
-
-function updateConvertBtn() {
-  convertBtn.disabled=!(selectedFile&&selectedFmt);
-  convertBtn.textContent=selectedFile&&selectedFmt?`Convert to ${selectedFmt.toUpperCase()}`:'Convert file';
-}
-
-function checkPageSelector() {
-  const ps=document.getElementById('pageSelector');
-  if(selectedFmt&&pageCount>1){
-    ps.style.display='block';
-    const isImg=selectedFmt==='jpg'||selectedFmt==='png';
-    document.getElementById('allPagesDesc').textContent=isImg?`${pageCount} pages as ZIP file`:`All ${pageCount} pages`;
-    document.getElementById('pageInputHint').textContent=`This PDF has ${pageCount} pages`;
-  } else {
-    ps.style.display='none'; selectedPages='all';
-    document.getElementById('pageInputArea').style.display='none';
-  }
-}
-
-document.querySelectorAll('.page-opt').forEach(el=>{
-  el.addEventListener('click',()=>{
-    document.querySelectorAll('.page-opt').forEach(e=>{e.style.borderColor='#e5e7eb';e.style.background='white';e.querySelector('span').style.color='#333';});
-    el.style.borderColor='#6366f1';el.style.background='#eef2ff';el.querySelector('span').style.color='#4f46e5';
-    selectedPages=el.dataset.page;
-    document.getElementById('pageInputArea').style.display=selectedPages==='specific'?'block':'none';
-  });
-});
-
-function validatePageInput() {
-  const raw=document.getElementById('pageInput').value.trim();
-  const err=document.getElementById('pageInputError'), inp=document.getElementById('pageInput');
-  if(!raw){err.style.display='none';inp.style.borderColor='#e5e7eb';return true;}
-  for(let p of raw.split(',')){
-    p=p.trim();
-    if(/^\d+$/.test(p)){const n=parseInt(p);if(n<=0){err.textContent='❌ Page numbers must be 1 or greater.';err.style.display='block';inp.style.borderColor='#dc2626';return false;}if(n>pageCount){err.textContent=`❌ Page ${n} doesn't exist. This PDF only has ${pageCount} pages.`;err.style.display='block';inp.style.borderColor='#dc2626';return false;}}
-    else if(/^\d+-\d+$/.test(p)){const[s,e]=p.split('-').map(Number);if(s<=0||e<=0){err.textContent='❌ Page numbers must be 1 or greater.';err.style.display='block';inp.style.borderColor='#dc2626';return false;}if(s>e){err.textContent=`❌ Invalid range "${p}".`;err.style.display='block';inp.style.borderColor='#dc2626';return false;}if(e>pageCount){err.textContent=`❌ Page ${e} doesn't exist. This PDF only has ${pageCount} pages.`;err.style.display='block';inp.style.borderColor='#dc2626';return false;}}
-    else{err.textContent=`❌ Invalid format "${p}". Use numbers, commas, and ranges like 1-3.`;err.style.display='block';inp.style.borderColor='#dc2626';return false;}
-  }
-  err.style.display='none';inp.style.borderColor='#22c55e';return true;
-}
-document.getElementById('pageInput').addEventListener('input',validatePageInput);
-
-convertBtn.addEventListener('click', async()=>{
-  if(!selectedFile||!selectedFmt)return;
-  if(selectedPages==='specific'){const pv=document.getElementById('pageInput').value.trim();if(!pv){showStatus('error','❌ Please enter page numbers.');return;}if(!validatePageInput()){showStatus('error','❌ Please fix the page input errors.');return;}}
-  convertBtn.disabled=true; status.style.display='none'; startConvertProgress();
-  const fd=new FormData();
-  fd.append('file',selectedFile);fd.append('format',selectedFmt);fd.append('mode',selectedMode);
-  if(selectedPages==='specific')fd.append('pages',document.getElementById('pageInput').value.trim());
-  try{
-    const res=await fetch('/convert',{method:'POST',body:fd});
-    if(!res.ok){const d=await res.json();finishConvertProgress(false);showStatus('error','❌ '+(d.error||'Conversion failed.'));return;}
-    const blob=await res.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;
-    let dn;
-    if(selectedFmt==='jpg'||selectedFmt==='png'){const n=selectedPages==='all'?pageCount:countSelectedPages(document.getElementById('pageInput').value.trim());dn=selectedFile.name.replace('.pdf',n>1?'.zip':'.'+selectedFmt);}
-    else dn=selectedFile.name.replace('.pdf','.'+selectedFmt);
-    a.download=dn;document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
-    finishConvertProgress(true);showStatus('success','✅ Done! Your file has been downloaded.');
-  }catch(e){finishConvertProgress(false);showStatus('error','❌ Something went wrong. Please try again.');}
-  finally{convertBtn.disabled=false;updateConvertBtn();}
-});
-
-// ── TO-PDF Mode ────────────────────────────────────────────────────────────
-const toPdfDropZone=document.getElementById('toPdfDropZone');
-const toPdfFileInput=document.getElementById('toPdfFileInput');
-const toPdfBtn=document.getElementById('toPdfBtn');
-const filesList=document.getElementById('filesList');
-
-const toPdfConfig={
-  image:{accept:'image/*',multiple:true,icon:'🖼️',text:'Drop images here or click to browse',hint:'JPG, PNG • Multiple files allowed • Combined into one PDF'},
-  docx:{accept:'.docx',multiple:false,icon:'📝',text:'Drop your Word file here or click to browse',hint:'Word document (.docx) • Single file'},
-  xlsx:{accept:'.xlsx',multiple:false,icon:'📊',text:'Drop your Excel file here or click to browse',hint:'Excel spreadsheet (.xlsx) • Single file'},
-  pptx:{accept:'.pptx',multiple:false,icon:'📽️',text:'Drop your PowerPoint file here or click to browse',hint:'PowerPoint presentation (.pptx) • Single file'},
-};
-
-function selectToPdfFmt(el, fmt) {
-  document.querySelectorAll('.to-pdf-formats .fmt').forEach(e=>e.classList.remove('active'));
-  el.classList.add('active'); toPdfFmt=fmt; toPdfFiles=[]; toPdfPreviewFile=null;
-  renderFilesList();
-  const cfg=toPdfConfig[fmt];
-  toPdfFileInput.accept=cfg.accept; toPdfFileInput.multiple=cfg.multiple;
-  document.getElementById('toPdfDropIcon').textContent=cfg.icon;
-  document.getElementById('toPdfDropText').textContent=cfg.text;
-  document.getElementById('toPdfDropHint').textContent=cfg.hint;
-  toPdfBtn.disabled=true; status.style.display='none';
-  previewPanel.classList.remove('visible');
-}
-
-toPdfDropZone.addEventListener('click',()=>toPdfFileInput.click());
-toPdfDropZone.addEventListener('dragover',e=>{e.preventDefault();toPdfDropZone.classList.add('drag-over');});
-toPdfDropZone.addEventListener('dragleave',()=>toPdfDropZone.classList.remove('drag-over'));
-toPdfDropZone.addEventListener('drop',e=>{e.preventDefault();toPdfDropZone.classList.remove('drag-over');handleToPdfFiles(e.dataTransfer.files);});
-toPdfFileInput.addEventListener('change',e=>handleToPdfFiles(e.target.files));
-
-async function handleToPdfFiles(fileList) {
-  const newFiles = Array.from(fileList);
-  if (toPdfFmt === 'image') toPdfFiles = [...toPdfFiles, ...newFiles];
-  else toPdfFiles = [newFiles[0]];
-  renderFilesList();
-  toPdfBtn.disabled = toPdfFiles.length === 0;
-  toPdfFileInput.value = '';
-  // Show preview — pass all files for images so navigation works
-  if (toPdfFiles.length > 0) {
-    if (toPdfFmt === 'image') await showPreview(toPdfFiles, 'image');
-    else await showPreview(toPdfFiles[0], toPdfFmt);
-  }
-}
-
-function renderFilesList() {
-  filesList.innerHTML='';
-  if(toPdfFiles.length===0){filesList.style.display='none';return;}
-  filesList.style.display='flex';
-  toPdfFiles.forEach((f,i)=>{
-    const item=document.createElement('div'); item.className='file-item';
-    item.innerHTML=`<span class="fname">${f.name}</span><span class="fsize">${formatBytes(f.size)}</span><button class="remove-file" onclick="removeToPdfFile(${i})">✕</button>`;
-    filesList.appendChild(item);
-  });
-}
-
-function removeToPdfFile(idx) {
-  toPdfFiles.splice(idx, 1);
-  renderFilesList();
-  toPdfBtn.disabled = toPdfFiles.length === 0;
-  if (toPdfFiles.length > 0) {
-    if (toPdfFmt === 'image') showPreview(toPdfFiles, 'image');
-    else showPreview(toPdfFiles[0], toPdfFmt);
-  } else {
-    previewPanel.classList.remove('visible');
-  }
-}
-
-toPdfBtn.addEventListener('click', async()=>{
-  if(toPdfFiles.length===0)return;
-  toPdfBtn.disabled=true; status.style.display='none'; startConvertProgress();
-  const fd=new FormData(); fd.append('format',toPdfFmt);
-  toPdfFiles.forEach(f=>fd.append('files',f));
-  try{
-    const res=await fetch('/convert-to-pdf',{method:'POST',body:fd});
-    if(!res.ok){const d=await res.json();finishConvertProgress(false);showStatus('error','❌ '+(d.error||'Conversion failed.'));return;}
-    const blob=await res.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;
-    a.download=toPdfFiles[0].name.replace(/\.[^.]+$/,'')+'_converted.pdf';
-    document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
-    finishConvertProgress(true);showStatus('success','✅ Done! Your PDF has been downloaded.');
-  }catch(e){finishConvertProgress(false);showStatus('error','❌ Something went wrong. Please try again.');}
-  finally{toPdfBtn.disabled=toPdfFiles.length===0;}
-});
-
-// ── LOCK ───────────────────────────────────────────────────────────────────
-let lockFile = null;
-const lockDropZone = document.getElementById('lockDropZone');
-const lockFileInput = document.getElementById('lockFileInput');
-const lockBtn = document.getElementById('lockBtn');
-
-lockDropZone.addEventListener('click', () => lockFileInput.click());
-lockDropZone.addEventListener('dragover', e => { e.preventDefault(); lockDropZone.classList.add('drag-over'); });
-lockDropZone.addEventListener('dragleave', () => lockDropZone.classList.remove('drag-over'));
-lockDropZone.addEventListener('drop', e => { e.preventDefault(); lockDropZone.classList.remove('drag-over'); setLockFile(e.dataTransfer.files[0]); });
-lockFileInput.addEventListener('change', e => { setLockFile(e.target.files[0]); lockFileInput.value=''; });
-document.getElementById('lockRemoveFile').addEventListener('click', () => {
-  lockFile = null;
-  document.getElementById('lockFileSelected').style.display = 'none';
-  document.getElementById('lockOptions').style.display = 'none';
-  lockDropZone.style.display = 'block';
-  lockBtn.disabled = true;
-  previewPanel.classList.remove('visible');
-});
-
-function setLockFile(f) {
-  if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
-  showUploadProgress('Uploading...');
-  lockFile = f;
-  document.getElementById('lockFileName').textContent = f.name;
-  document.getElementById('lockFileSize').textContent = formatBytes(f.size);
-  document.getElementById('lockFileSelected').style.display = 'flex';
-  lockDropZone.style.display = 'none';
-  document.getElementById('lockOptions').style.display = 'block';
-  lockBtn.disabled = false;
-  updateUploadProgress(100, 'Ready ✓'); hideUploadProgress();
-  showPreview(f, 'pdf');
-}
-
-function togglePwd(inputId, eyeId) {
-  const inp = document.getElementById(inputId);
-  const eye = document.getElementById(eyeId);
-  if (inp.type === 'password') { inp.type = 'text'; eye.textContent = '🙈'; }
-  else { inp.type = 'password'; eye.textContent = '👁️'; }
-}
-
-lockBtn.addEventListener('click', async () => {
-  if (!lockFile) return;
-  const pwd = document.getElementById('lockPassword').value.trim();
-  const pwd2 = document.getElementById('lockPasswordConfirm').value.trim();
-  const err = document.getElementById('lockPwdError');
-  if (!pwd) { err.textContent='❌ Please enter a password.'; err.style.display='block'; return; }
-  if (pwd.length < 4) { err.textContent='❌ Password must be at least 4 characters.'; err.style.display='block'; return; }
-  if (pwd !== pwd2) { err.textContent='❌ Passwords do not match.'; err.style.display='block'; return; }
-  err.style.display='none';
-  lockBtn.disabled = true; status.style.display='none'; startConvertProgress();
-  const fd = new FormData();
-  fd.append('file', lockFile);
-  fd.append('password', pwd);
-  try {
-    const res = await fetch('/lock', { method: 'POST', body: fd });
-    if (!res.ok) { const d = await res.json(); finishConvertProgress(false); showStatus('error', '❌ ' + (d.error||'Failed.')); return; }
-    const blob = await res.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
-    a.href = url; a.download = lockFile.name.replace('.pdf','_locked.pdf');
-    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-    finishConvertProgress(true); showStatus('success', '✅ Done! Your PDF is now password protected.');
-  } catch(e) { finishConvertProgress(false); showStatus('error', '❌ Something went wrong.'); }
-  finally { lockBtn.disabled = false; }
-});
-
-// ── UNLOCK ─────────────────────────────────────────────────────────────────
-let unlockFile = null;
-const unlockDropZone = document.getElementById('unlockDropZone');
-const unlockFileInput = document.getElementById('unlockFileInput');
-const unlockBtn = document.getElementById('unlockBtn');
-
-unlockDropZone.addEventListener('click', () => unlockFileInput.click());
-unlockDropZone.addEventListener('dragover', e => { e.preventDefault(); unlockDropZone.classList.add('drag-over'); });
-unlockDropZone.addEventListener('dragleave', () => unlockDropZone.classList.remove('drag-over'));
-unlockDropZone.addEventListener('drop', e => { e.preventDefault(); unlockDropZone.classList.remove('drag-over'); setUnlockFile(e.dataTransfer.files[0]); });
-unlockFileInput.addEventListener('change', e => { setUnlockFile(e.target.files[0]); unlockFileInput.value=''; });
-document.getElementById('unlockRemoveFile').addEventListener('click', () => {
-  unlockFile = null;
-  document.getElementById('unlockFileSelected').style.display = 'none';
-  document.getElementById('unlockOptions').style.display = 'none';
-  unlockDropZone.style.display = 'block';
-  unlockBtn.disabled = true;
-  previewPanel.classList.remove('visible');
-});
-document.getElementById('unlockDisclaimer').addEventListener('change', function() {
-  unlockBtn.disabled = !(unlockFile && this.checked);
-});
-
-// ── fetchWithProgress helper ───────────────────────────────────────────────
-function fetchWithProgress(url, formData, onProgress) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.upload.addEventListener('progress', e => {
-      if (e.lengthComputable) onProgress(Math.round(e.loaded / e.total * 100));
-    });
-    xhr.onload = () => resolve({ ok: xhr.status < 400, json: () => Promise.resolve(JSON.parse(xhr.responseText)) });
-    xhr.onerror = () => reject(new Error('Network error'));
-    xhr.open('POST', url);
-    xhr.send(formData);
-  });
-}
-
-function setUnlockFile(f) {
-  if (!f || !f.name.toLowerCase().endsWith('.pdf')) { showStatus('error', '⚠️ Please upload a PDF file.'); return; }
-  showUploadProgress('Uploading...');
-  unlockFile = f;
-  document.getElementById('unlockFileName').textContent = f.name;
-  document.getElementById('unlockFileSize').textContent = formatBytes(f.size);
-  document.getElementById('unlockFileSelected').style.display = 'flex';
-  unlockDropZone.style.display = 'none';
-  document.getElementById('unlockOptions').style.display = 'block';
-  unlockBtn.disabled = !document.getElementById('unlockDisclaimer').checked;
-  updateUploadProgress(100, 'Ready ✓'); hideUploadProgress();
-  showPreview(f, 'pdf');
-}
-
-unlockBtn.addEventListener('click', async () => {
-  if (!unlockFile || !document.getElementById('unlockDisclaimer').checked) return;
-  const pwd = document.getElementById('unlockPassword').value.trim();
-  const err = document.getElementById('unlockPwdError');
-  if (!pwd) { err.textContent='❌ Please enter the PDF password.'; err.style.display='block'; return; }
-  err.style.display='none';
-  unlockBtn.disabled = true; status.style.display='none'; startConvertProgress();
-  const fd = new FormData();
-  fd.append('file', unlockFile);
-  fd.append('password', pwd);
-  try {
-    const res = await fetch('/unlock', { method: 'POST', body: fd });
-    if (!res.ok) {
-      const d = await res.json();
-      finishConvertProgress(false);
-      const msg = d.error || 'Failed.';
-      if (msg.includes('Incorrect')) {
-        err.textContent = '❌ ' + msg + " If you've forgotten the password, we're unable to recover it.";
-        err.style.display = 'block';
-      } else {
-        showStatus('error', '❌ ' + msg);
-      }
-      return;
-    }
-    const blob = await res.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
-    a.href = url; a.download = unlockFile.name.replace('.pdf','_unlocked.pdf');
-    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-    finishConvertProgress(true); showStatus('success', '✅ Done! Password protection has been removed.');
-  } catch(e) { finishConvertProgress(false); showStatus('error', '❌ Something went wrong.'); }
-  finally { unlockBtn.disabled = !document.getElementById('unlockDisclaimer').checked; }
-});
-</script>
-</body>
-</html>
+body{{margin:0;padding:20px;background:#666;display:flex;flex-direction:column;align-items:center}}
+.page{{margin:10px 0;box-shadow:0 4px 12px rgba(0,0,0,0.4)}}
+.page img{{display:block;max-width:900px;width:100%}}
+</style></head>
+<body>{pages_html}</body></html>'''
+    with open(output_path, 'w') as f:
+        f.write(html)
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def rgb_to_hex(color):
+    try:
+        if isinstance(color, (list, tuple)) and len(color) == 3:
+            r, g, b = [int(round(c * 255)) for c in color]
+            return f'{r:02X}{g:02X}{b:02X}'
+        if isinstance(color, (list, tuple)) and len(color) == 1:
+            v = int(round(color[0] * 255))
+            return f'{v:02X}{v:02X}{v:02X}'
+    except:
+        pass
+    return None
+
+def is_bold(word):
+    fontname = word.get('fontname', '')
+    return any(b in fontname.lower() for b in ['bold', 'black', 'heavy', 'semibold', 'demi'])
+
+def apply_rtl_to_paragraph(para):
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    pPr = para._p.get_or_add_pPr()
+    bidi_el = OxmlElement('w:bidi')
+    pPr.append(bidi_el)
+    para.alignment = 2
+
+def apply_rtl_to_run(run):
+    from docx.oxml import OxmlElement
+    rPr = run._r.get_or_add_rPr()
+    rtl_el = OxmlElement('w:rtl')
+    rPr.append(rtl_el)
+
+def set_cell_background(cell, hex_color):
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    tc = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    shd = OxmlElement('w:shd')
+    shd.set(qn('w:val'), 'clear')
+    shd.set(qn('w:color'), 'auto')
+    shd.set(qn('w:fill'), hex_color)
+    tcPr.append(shd)
+
+def compute_median_font_size(page):
+    sizes = []
+    try:
+        words = page.extract_words(extra_attrs=['size'])
+        for w in words:
+            try:
+                sizes.append(float(w.get('size', 12)))
+            except:
+                pass
+    except:
+        pass
+    if not sizes:
+        return 12.0
+    sizes.sort()
+    return sizes[len(sizes) // 2]
+
+def get_rect_color_at(rects, y_top, y_bottom, x0, x1, page_w, page_h):
+    best_color = None
+    best_area = 0
+    for r in rects:
+        if r['width'] > page_w * 0.95 and r['height'] > page_h * 0.5:
+            continue
+        oy0 = max(r['top'], y_top)
+        oy1 = min(r['bottom'], y_bottom)
+        ox0 = max(r['x0'], x0)
+        ox1 = min(r['x1'], x1)
+        if oy1 > oy0 and ox1 > ox0:
+            area = (oy1 - oy0) * (ox1 - ox0)
+            if area > best_area:
+                color = r.get('non_stroking_color')
+                if color is not None:
+                    hex_c = rgb_to_hex(color)
+                    if hex_c and hex_c.upper() not in ('FFFFFF', 'FEFEFE', 'FDFDFD'):
+                        best_color = hex_c
+                        best_area = area
+    return best_color
+
+def merge_split_cells(row):
+    """
+    Merge cells where an English word is split mid-word across column boundary.
+    Only merges when: cur ends with ASCII letter AND next starts with lowercase ASCII letter.
+    Never merges when next cell starts with digit (digits = values, not continuations).
+    """
+    if not row:
+        return row
+    merged = list(row)
+    i = 0
+    while i < len(merged) - 1:
+        cur = clean_text(str(merged[i]) if merged[i] else '')
+        nxt = clean_text(str(merged[i + 1]) if merged[i + 1] else '')
+        if not cur or not nxt:
+            i += 1
+            continue
+        cur_ends_with_ascii_letter = cur[-1].isascii() and cur[-1].isalpha()
+        nxt_starts_lowercase_ascii = nxt[0].isascii() and nxt[0].islower()
+        cur_not_arabic = not is_rtl_text(cur)
+        if cur_ends_with_ascii_letter and nxt_starts_lowercase_ascii and cur_not_arabic:
+            merged[i] = cur + nxt
+            merged.pop(i + 1)
+        else:
+            i += 1
+    return merged
+
+def extract_page_images_pymupdf(input_path, page_index, uid, output_folder):
+    saved = []
+    try:
+        import fitz
+        doc = fitz.open(input_path)
+        page = doc[page_index]
+        image_list = page.get_images(full=True)
+        for img_index, img in enumerate(image_list):
+            xref = img[0]
+            try:
+                base_image = doc.extract_image(xref)
+                img_bytes = base_image['image']
+                img_ext = base_image.get('ext', 'png')
+                w = base_image.get('width', 0)
+                h = base_image.get('height', 0)
+                if w < 50 or h < 50:
+                    continue
+                img_path = os.path.join(output_folder, f'{uid}_pg{page_index}_img{img_index}.{img_ext}')
+                with open(img_path, 'wb') as f:
+                    f.write(img_bytes)
+                saved.append(img_path)
+            except:
+                pass
+        doc.close()
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    return saved
+
+# ── Debug endpoint ─────────────────────────────────────────────────────────────
+
+@app.route('/debug', methods=['POST'])
+def debug():
+    """Upload a PDF and get a diagnostic report of what the server sees."""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file'}), 400
+    file = request.files['file']
+    uid = str(uuid.uuid4())[:8]
+    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
+    file.save(input_path)
+
+    report = {'pages': []}
+    try:
+        with pdfplumber.open(input_path) as pdf:
+            report['page_count'] = len(pdf.pages)
+            for page_index, page in enumerate(pdf.pages[:2]):  # Only check first 2 pages
+                page_w = float(page.width)
+                page_h = float(page.height)
+                rects = page.rects
+
+                cell_rects = [r for r in rects if
+                              r['width'] < page_w * 0.95 and
+                              r['height'] < page_h * 0.3 and
+                              r['width'] > 5 and r['height'] > 5]
+
+                page_info = {
+                    'page': page_index + 1,
+                    'total_rects': len(rects),
+                    'cell_rects': len(cell_rects),
+                    'tables_found': 0,
+                    'table_rows': 0,
+                    'table_cols': 0,
+                    'error': None,
+                    'sample_row': None,
+                }
+
+                if cell_rects:
+                    y_pos = sorted(set(
+                        [round(r['top'], 1) for r in cell_rects] +
+                        [round(r['bottom'], 1) for r in cell_rects]
+                    ))
+                    x_pos = sorted(set(
+                        [round(r['x0'], 1) for r in cell_rects] +
+                        [round(r['x1'], 1) for r in cell_rects]
+                    ))
+                    page_info['y_pos_count'] = len(y_pos)
+                    page_info['x_pos_count'] = len(x_pos)
+
+                    try:
+                        tables = page.extract_tables({
+                            'vertical_strategy': 'explicit',
+                            'horizontal_strategy': 'explicit',
+                            'explicit_vertical_lines': x_pos,
+                            'explicit_horizontal_lines': y_pos,
+                            'snap_tolerance': 4,
+                            'join_tolerance': 4,
+                        }) or []
+                        page_info['tables_found'] = len(tables)
+                        if tables:
+                            page_info['table_rows'] = len(tables[0])
+                            page_info['table_cols'] = len(tables[0][0]) if tables[0] else 0
+                            if tables[0]:
+                                page_info['sample_row'] = [str(c)[:20] if c else '' for c in tables[0][2]] if len(tables[0]) > 2 else []
+                    except Exception as e:
+                        page_info['error'] = traceback.format_exc()
+
+                report['pages'].append(page_info)
+    except Exception as e:
+        report['fatal_error'] = traceback.format_exc()
+    finally:
+        if os.path.exists(input_path):
+            os.remove(input_path)
+
+    return jsonify(report)
+
+# ── Main native DOCX converter ─────────────────────────────────────────────────
+
+def save_as_docx_native(input_path, output_path, uid, pages_param=None):
+    from docx import Document
+    from docx.shared import Pt, Inches
+
+    doc = Document()
+    for section in doc.sections:
+        section.top_margin = Inches(0.75)
+        section.bottom_margin = Inches(0.75)
+        section.left_margin = Inches(0.75)
+        section.right_margin = Inches(0.75)
+
+    with pdfplumber.open(input_path) as pdf:
+        total_pages = len(pdf.pages)
+        page_indices = parse_pages(pages_param, total_pages) if pages_param else list(range(total_pages))
+        first_page = True
+        for page_index in page_indices:
+            page = pdf.pages[page_index]
+            if not first_page:
+                doc.add_page_break()
+            first_page = False
+
+            page_w = float(page.width)
+            page_h = float(page.height)
+            rects = page.rects
+            median_size = compute_median_font_size(page)
+
+            # Embed page images — but skip full-page images (they cause blank pages)
+            img_paths = extract_page_images_pymupdf(input_path, page_index, uid, OUTPUT_FOLDER)
+            for img_path in img_paths:
+                try:
+                    pil_img = Image.open(img_path)
+                    w_px, h_px = pil_img.size
+                    if w_px < 50 or h_px < 50:
+                        continue
+                    # Skip images that are close to full-page size — these are
+                    # page backgrounds/renders, not embedded photos
+                    page_aspect = page_w / page_h if page_h > 0 else 1
+                    img_aspect = w_px / h_px if h_px > 0 else 1
+                    aspect_similar = abs(page_aspect - img_aspect) < 0.1
+                    # If image is large AND same aspect ratio as page → skip
+                    if aspect_similar and w_px > 400 and h_px > 400:
+                        continue
+                    doc.add_picture(img_path, width=Inches(6.5))
+                except:
+                    pass
+
+            # Detect tables via filled rects
+            cell_rects = [r for r in rects if
+                          r['width'] < page_w * 0.95 and
+                          r['height'] < page_h * 0.3 and
+                          r['width'] > 5 and r['height'] > 5]
+
+            has_table = False
+            tables = []
+            y_pos = []
+            x_pos = []
+
+            if cell_rects:
+                y_pos = sorted(set(
+                    [round(r['top'], 1) for r in cell_rects] +
+                    [round(r['bottom'], 1) for r in cell_rects]
+                ))
+                x_pos = sorted(set(
+                    [round(r['x0'], 1) for r in cell_rects] +
+                    [round(r['x1'], 1) for r in cell_rects]
+                ))
+                if len(y_pos) >= 2 and len(x_pos) >= 2:
+                    try:
+                        tables = page.extract_tables({
+                            'vertical_strategy': 'explicit',
+                            'horizontal_strategy': 'explicit',
+                            'explicit_vertical_lines': x_pos,
+                            'explicit_horizontal_lines': y_pos,
+                            'snap_tolerance': 4,
+                            'join_tolerance': 4,
+                        }) or []
+                        if tables:
+                            has_table = True
+                    except:
+                        pass
+
+            if not has_table:
+                try:
+                    tables = page.extract_tables({
+                        'vertical_strategy': 'lines',
+                        'horizontal_strategy': 'lines',
+                        'snap_tolerance': 3,
+                    }) or []
+                    if tables:
+                        has_table = True
+                        y_pos = []
+                        x_pos = []
+                except:
+                    pass
+
+            if has_table and tables:
+                table_data = tables[0]
+                rows = [r for r in table_data if any(c and str(c).strip() for c in r)]
+
+                if rows:
+                    rows = [merge_split_cells(r) for r in rows]
+                    num_cols = max(len(r) for r in rows)
+                    norm_rows = [list(r) + [None] * (num_cols - len(r)) for r in rows]
+
+                    tbl = doc.add_table(rows=len(norm_rows), cols=num_cols)
+                    tbl.style = 'Table Grid'
+
+                    row_y_spans = []
+                    if len(y_pos) >= 2:
+                        row_y_spans = [(y_pos[i], y_pos[i+1]) for i in range(len(y_pos)-1)]
+
+                    col_x_spans = []
+                    if len(x_pos) >= 2:
+                        col_x_spans = [(x_pos[j], x_pos[j+1]) for j in range(min(num_cols, len(x_pos)-1))]
+
+                    orig_indices = [i for i, r in enumerate(table_data)
+                                    if any(c and str(c).strip() for c in r)]
+
+                    for r_idx, row in enumerate(norm_rows):
+                        orig_r = orig_indices[r_idx] if r_idx < len(orig_indices) else r_idx
+                        y_top, y_bottom = row_y_spans[orig_r] if orig_r < len(row_y_spans) else (0, 0)
+
+                        for c_idx, cell_val in enumerate(row):
+                            cell = tbl.rows[r_idx].cells[c_idx]
+                            text = clean_text(str(cell_val) if cell_val else '')
+                            if text.lower() == 'none':
+                                text = ''
+
+                            if y_top != y_bottom and c_idx < len(col_x_spans):
+                                cx0, cx1 = col_x_spans[c_idx]
+                                hex_color = get_rect_color_at(
+                                    rects, y_top, y_bottom, cx0, cx1, page_w, page_h)
+                                if hex_color:
+                                    try:
+                                        set_cell_background(cell, hex_color)
+                                    except:
+                                        pass
+
+                            if not text:
+                                continue
+
+                            rtl = is_rtl_text(text)
+                            if rtl:
+                                text = fix_rtl(text)
+
+                            para = cell.paragraphs[0]
+                            if rtl:
+                                apply_rtl_to_paragraph(para)
+                            run = para.add_run(text)
+                            run.font.size = Pt(10)
+                            if rtl:
+                                apply_rtl_to_run(run)
+
+                    doc.add_paragraph()
+
+            else:
+                try:
+                    all_words = page.extract_words(
+                        x_tolerance=3, y_tolerance=3,
+                        keep_blank_chars=False,
+                        use_text_flow=False,
+                        extra_attrs=['fontname', 'size']
+                    )
+                except:
+                    all_words = []
+
+                if not all_words:
+                    try:
+                        import pytesseract
+                        imgs = convert_from_path(input_path, dpi=150,
+                                                first_page=page_index+1,
+                                                last_page=page_index+1)
+                        if imgs:
+                            text = pytesseract.image_to_string(imgs[0], lang='eng+ara')
+                            for line in text.split('\n'):
+                                line = clean_text(line)
+                                if line:
+                                    para = doc.add_paragraph()
+                                    rtl = is_rtl_text(line)
+                                    if rtl:
+                                        line = fix_rtl(line)
+                                        apply_rtl_to_paragraph(para)
+                                    run = para.add_run(line)
+                                    run.font.size = Pt(11)
+                                    if rtl:
+                                        apply_rtl_to_run(run)
+                    except:
+                        pass
+                    continue
+
+                lines_dict = {}
+                for word in all_words:
+                    y_key = round(float(word['top']) / 4) * 4
+                    if y_key not in lines_dict:
+                        lines_dict[y_key] = []
+                    lines_dict[y_key].append(word)
+
+                for y_key in sorted(lines_dict.keys()):
+                    words = sorted(lines_dict[y_key], key=lambda w: float(w['x0']))
+                    line_text = clean_text(' '.join(w['text'] for w in words))
+                    if not line_text:
+                        continue
+
+                    sizes = []
+                    for w in words:
+                        try:
+                            sizes.append(float(w.get('size', 12)))
+                        except:
+                            sizes.append(12.0)
+                    avg_size = sum(sizes) / len(sizes) if sizes else 12.0
+                    bold_count = sum(1 for w in words if is_bold(w))
+                    mostly_bold = bold_count > len(words) / 2
+                    rtl = is_rtl_text(line_text)
+
+                    if rtl:
+                        line_text = fix_rtl(line_text)
+
+                    para = doc.add_paragraph()
+                    para.paragraph_format.space_before = Pt(0)
+                    para.paragraph_format.space_after = Pt(2)
+                    if rtl:
+                        apply_rtl_to_paragraph(para)
+
+                    run = para.add_run(line_text)
+                    run.bold = mostly_bold or (avg_size > median_size * 1.3)
+                    run.font.size = Pt(min(max(8, avg_size), 72))
+                    if rtl:
+                        apply_rtl_to_run(run)
+
+    doc.save(output_path)
+
+
+def save_as_docx_text(input_path, output_path, pages_param=None):
+    """OCR-based DOCX — always renders pages to images then runs tesseract.
+    This avoids garbled text from PDFs with custom font encodings."""
+    from docx import Document
+    from docx.shared import Pt, Inches
+    import pytesseract
+
+    doc = Document()
+
+    with pdfplumber.open(input_path) as pdf:
+        total_pages = len(pdf.pages)
+        page_indices = parse_pages(pages_param, total_pages) if pages_param else list(range(total_pages))
+        first_page = True
+
+        for i in page_indices:
+            page = pdf.pages[i]
+            if not first_page:
+                doc.add_page_break()
+            first_page = False
+
+            section = doc.sections[-1]
+            section.page_width = Inches(float(page.width) / 72)
+            section.page_height = Inches(float(page.height) / 72)
+            section.top_margin = Inches(0.75)
+            section.bottom_margin = Inches(0.75)
+            section.left_margin = Inches(0.75)
+            section.right_margin = Inches(0.75)
+
+            # Always render to image and OCR — avoids garbled text from
+            # PDFs with custom/private-use font encodings
+            imgs = convert_from_path(input_path, dpi=200,
+                                     first_page=i+1, last_page=i+1,
+                                     use_cropbox=True, strict=False)
+            if imgs:
+                text = pytesseract.image_to_string(imgs[0], lang='eng+ara')
+                for line in text.split('\n'):
+                    line = clean_text(line)
+                    if line:
+                        para = doc.add_paragraph()
+                        rtl = is_rtl_text(line)
+                        if rtl:
+                            line = fix_arabic_for_docx(line)
+                            apply_rtl_to_paragraph(para)
+                        run = para.add_run(line)
+                        run.font.size = Pt(11)
+                        if rtl:
+                            apply_rtl_to_run(run)
+
+    doc.save(output_path)
+
+
+def save_as_xlsx(input_path, output_path, pages_param, page_count):
+    """
+    Scan PDF for tables and export each table to a separate Excel sheet.
+    Uses rect-based detection (same as DOCX native) for accuracy.
+    Raises ValueError if no tables found.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    wb.remove(wb.active)  # Remove default empty sheet
+    sheet_count = 0
+
+    with pdfplumber.open(input_path) as pdf:
+        total_pages = len(pdf.pages)
+        page_indices = parse_pages(pages_param, total_pages) if pages_param else list(range(total_pages))
+
+        for page_index in page_indices:
+            page = pdf.pages[page_index]
+            page_w = float(page.width)
+            page_h = float(page.height)
+            rects = page.rects
+
+            # Try rect-based table extraction first
+            cell_rects = [r for r in rects if
+                          r['width'] < page_w * 0.95 and
+                          r['height'] < page_h * 0.3 and
+                          r['width'] > 5 and r['height'] > 5]
+
+            tables = []
+            y_pos = []
+            x_pos = []
+
+            if cell_rects:
+                y_pos = sorted(set(
+                    [round(r['top'], 1) for r in cell_rects] +
+                    [round(r['bottom'], 1) for r in cell_rects]
+                ))
+                x_pos = sorted(set(
+                    [round(r['x0'], 1) for r in cell_rects] +
+                    [round(r['x1'], 1) for r in cell_rects]
+                ))
+                if len(y_pos) >= 2 and len(x_pos) >= 2:
+                    try:
+                        tables = page.extract_tables({
+                            'vertical_strategy': 'explicit',
+                            'horizontal_strategy': 'explicit',
+                            'explicit_vertical_lines': x_pos,
+                            'explicit_horizontal_lines': y_pos,
+                            'snap_tolerance': 4,
+                            'join_tolerance': 4,
+                        }) or []
+                    except:
+                        pass
+
+            # Fallback to line-based
+            if not tables:
+                try:
+                    tables = page.extract_tables({
+                        'vertical_strategy': 'lines',
+                        'horizontal_strategy': 'lines',
+                        'snap_tolerance': 3,
+                    }) or []
+                    y_pos = []
+                    x_pos = []
+                except:
+                    pass
+
+            for t_idx, table_data in enumerate(tables):
+                # Filter empty rows
+                rows = [r for r in table_data if any(c and str(c).strip() for c in r)]
+                if not rows:
+                    continue
+
+                sheet_count += 1
+                sheet_name = f'P{page_index+1}_T{t_idx+1}'
+                ws = wb.create_sheet(title=sheet_name)
+
+                # Get row y spans for color detection
+                row_y_spans = []
+                if len(y_pos) >= 2:
+                    row_y_spans = [(y_pos[i], y_pos[i+1]) for i in range(len(y_pos)-1)]
+                col_x_spans = []
+                if len(x_pos) >= 2:
+                    col_x_spans = [(x_pos[j], x_pos[j+1]) for j in range(len(x_pos)-1)]
+
+                orig_indices = [i for i, r in enumerate(table_data)
+                                if any(c and str(c).strip() for c in r)]
+
+                # Styles
+                thin_border = Border(
+                    left=Side(style='thin'),
+                    right=Side(style='thin'),
+                    top=Side(style='thin'),
+                    bottom=Side(style='thin')
+                )
+
+                for r_idx, row in enumerate(rows):
+                    orig_r = orig_indices[r_idx] if r_idx < len(orig_indices) else r_idx
+                    y_top, y_bottom = row_y_spans[orig_r] if orig_r < len(row_y_spans) else (0, 0)
+
+                    for c_idx, cell_val in enumerate(row):
+                        text = clean_text(str(cell_val) if cell_val else '')
+                        if text.lower() == 'none':
+                            text = ''
+
+                        xl_cell = ws.cell(row=r_idx+1, column=c_idx+1, value=text)
+                        xl_cell.border = thin_border
+                        xl_cell.alignment = Alignment(wrap_text=True, vertical='center')
+
+                        # Detect background color from rects
+                        if y_top != y_bottom and c_idx < len(col_x_spans):
+                            cx0, cx1 = col_x_spans[c_idx]
+                            hex_color = get_rect_color_at(
+                                rects, y_top, y_bottom, cx0, cx1, page_w, page_h)
+                            if hex_color:
+                                try:
+                                    xl_cell.fill = PatternFill(
+                                        start_color=hex_color,
+                                        end_color=hex_color,
+                                        fill_type='solid'
+                                    )
+                                    # White text on dark backgrounds
+                                    r_val = int(hex_color[0:2], 16)
+                                    g_val = int(hex_color[2:4], 16)
+                                    b_val = int(hex_color[4:6], 16)
+                                    brightness = (r_val * 299 + g_val * 587 + b_val * 114) / 1000
+                                    if brightness < 128:
+                                        xl_cell.font = Font(color='FFFFFF', bold=True)
+                                    else:
+                                        xl_cell.font = Font(bold=True)
+                                except:
+                                    pass
+
+                # Auto-fit column widths
+                for col in ws.columns:
+                    max_len = 0
+                    col_letter = get_column_letter(col[0].column)
+                    for cell in col:
+                        try:
+                            if cell.value:
+                                max_len = max(max_len, len(str(cell.value)))
+                        except:
+                            pass
+                    ws.column_dimensions[col_letter].width = min(max(max_len + 2, 8), 50)
+
+    if sheet_count == 0:
+        raise ValueError('No tables detected in this PDF. Try a PDF that contains structured tables with visible borders.')
+
+    wb.save(output_path)
+
+
+def get_page_images(input_path, pages_param, page_count, dpi):
+    """Get PIL images for either all pages or specific pages."""
+    if pages_param:
+        indices = parse_pages(pages_param, page_count)
+        result = []
+        for idx in indices:
+            imgs = convert_from_path(
+                input_path, dpi=dpi, thread_count=1,
+                first_page=idx+1, last_page=idx+1,
+                use_cropbox=True, strict=False
+            )
+            if imgs:
+                result.append(imgs[0])
+        return result
+    else:
+        return pdf_to_images(input_path, dpi=dpi)
+
+def parse_pages(pages_param, total):
+    indices = []
+    for part in pages_param.split(','):
+        part = part.strip()
+        if '-' in part:
+            try:
+                parts = part.split('-')
+                start = int(parts[0].strip())
+                end = int(parts[1].strip())
+                indices += list(range(start - 1, end))
+            except:
+                pass
+        else:
+            try:
+                indices.append(int(part) - 1)
+            except:
+                pass
+    return sorted(set([i for i in indices if 0 <= i < total]))
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/sitemap.xml')
+def sitemap():
+    return send_file('sitemap.xml', mimetype='application/xml')
+
+@app.route('/robots.txt')
+def robots():
+    return send_file('robots.txt', mimetype='text/plain')
+
+@app.route('/googleb1f0346b7552c5ac.html')
+def google_verify():
+    return send_file('googleb1f0346b7552c5ac.html', mimetype='text/html')
+
+@app.route('/privacy')
+def privacy():
+    return render_template('privacy.html')
+
+@app.route('/compress-pdf')
+def page_compress():
+    return render_template('index.html',
+        active_tab='compress',
+        seo_title='Compress PDF Online Free – Reduce PDF File Size | ieatpdf',
+        seo_desc='Compress your PDF online for free. Reduce PDF file size without losing quality. No signup needed. Files deleted immediately after compression.',
+        seo_keywords='compress pdf, reduce pdf size, pdf compressor, shrink pdf, pdf file size reducer',
+        seo_canonical='https://ieatpdf.com/compress-pdf'
+    )
+
+@app.route('/merge-pdf')
+def page_merge():
+    return render_template('index.html',
+        active_tab='merge',
+        seo_title='Merge PDF Files Online Free – Combine PDFs | ieatpdf',
+        seo_desc='Merge multiple PDF files into one online for free. Fast, easy, and secure. No signup required. Files deleted immediately after merging.',
+        seo_keywords='merge pdf, combine pdf, join pdf files, pdf merger, merge pdf online free',
+        seo_canonical='https://ieatpdf.com/merge-pdf'
+    )
+
+@app.route('/split-pdf')
+def page_split():
+    return render_template('index.html',
+        active_tab='split',
+        seo_title='Split PDF Online Free – Separate PDF Pages | ieatpdf',
+        seo_desc='Split a PDF into separate files by page range. Free, fast and private. No signup needed. Files deleted immediately after splitting.',
+        seo_keywords='split pdf, separate pdf pages, pdf splitter, extract pdf pages, split pdf online free',
+        seo_canonical='https://ieatpdf.com/split-pdf'
+    )
+
+@app.route('/lock-pdf')
+def page_lock():
+    return render_template('index.html',
+        active_tab='lock',
+        seo_title='Lock PDF with Password Online Free | ieatpdf',
+        seo_desc='Password protect your PDF file online for free. Add encryption to your PDF instantly. No signup required. Files deleted immediately.',
+        seo_keywords='lock pdf, password protect pdf, encrypt pdf, add password to pdf, pdf password protection',
+        seo_canonical='https://ieatpdf.com/lock-pdf'
+    )
+
+@app.route('/unlock-pdf')
+def page_unlock():
+    return render_template('index.html',
+        active_tab='unlock',
+        seo_title='Unlock PDF – Remove PDF Password Online Free | ieatpdf',
+        seo_desc='Remove password protection from your PDF online for free. Unlock encrypted PDFs instantly. No signup required. Files deleted immediately.',
+        seo_keywords='unlock pdf, remove pdf password, decrypt pdf, pdf password remover, unlock protected pdf',
+        seo_canonical='https://ieatpdf.com/unlock-pdf'
+    )
+
+@app.route('/pdf-to-word')
+def page_pdf_to_word():
+    return render_template('index.html',
+        active_tab='from-pdf',
+        seo_title='Convert PDF to Word Online Free | ieatpdf',
+        seo_desc='Convert PDF to Word (.docx) online for free. Fast, accurate PDF to Word conversion. No signup required. Files deleted immediately.',
+        seo_keywords='pdf to word, convert pdf to word, pdf to docx, pdf word converter, pdf to word online free',
+        seo_canonical='https://ieatpdf.com/pdf-to-word'
+    )
+
+@app.route('/pdf-to-jpg')
+def page_pdf_to_jpg():
+    return render_template('index.html',
+        active_tab='from-pdf',
+        seo_title='Convert PDF to JPG Online Free | ieatpdf',
+        seo_desc='Convert PDF pages to JPG images online for free. High quality PDF to image conversion. No signup required. Files deleted immediately.',
+        seo_keywords='pdf to jpg, convert pdf to image, pdf to png, pdf image converter, pdf to jpg online free',
+        seo_canonical='https://ieatpdf.com/pdf-to-jpg'
+    )
+
+@app.route('/edit-pdf')
+def page_edit():
+    return render_template('edit.html')
+
+@app.route('/extract-text-blocks', methods=['POST'])
+def extract_text_blocks():
+    import fitz  # PyMuPDF
+    try:
+        f = request.files.get('file')
+        page_num = int(request.form.get('page', 1)) - 1  # 0-indexed
+        if not f:
+            return jsonify({'error': 'No file uploaded'}), 400
+
+        pdf_bytes = f.read()
+        if not pdf_bytes:
+            return jsonify({'error': 'Empty file'}), 400
+
+        doc = fitz.open(stream=pdf_bytes, filetype='pdf')
+
+        if page_num >= len(doc):
+            return jsonify({'error': 'Page out of range'}), 400
+
+        page = doc[page_num]
+        blocks = []
+
+        # Use 'dict' (not rawdict) — more reliable across PyMuPDF versions
+        text_dict = page.get_text('dict')
+
+        for block in text_dict.get('blocks', []):
+            if block.get('type') != 0:  # 0 = text block
+                continue
+            for line in block.get('lines', []):
+                for span in line.get('spans', []):
+                    text = span.get('text', '').strip()
+                    if not text:
+                        continue
+                    bbox = span.get('bbox', [0, 0, 0, 0])
+
+                    # Color: PyMuPDF returns int (RGB packed) or tuple
+                    raw_color = span.get('color', 0)
+                    if isinstance(raw_color, (list, tuple)):
+                        r = int(raw_color[0] * 255) if raw_color[0] <= 1 else int(raw_color[0])
+                        g = int(raw_color[1] * 255) if len(raw_color) > 1 and raw_color[1] <= 1 else 0
+                        b = int(raw_color[2] * 255) if len(raw_color) > 2 and raw_color[2] <= 1 else 0
+                    else:
+                        color_int = int(raw_color)
+                        r = (color_int >> 16) & 0xFF
+                        g = (color_int >> 8) & 0xFF
+                        b = color_int & 0xFF
+
+                    hex_color = '#{:02x}{:02x}{:02x}'.format(r, g, b)
+
+                    blocks.append({
+                        'text': text,
+                        'x': round(bbox[0], 2),
+                        'y': round(bbox[1], 2),
+                        'w': round(bbox[2] - bbox[0], 2),
+                        'h': round(bbox[3] - bbox[1], 2),
+                        'size': round(span.get('size', 12), 2),
+                        'font': span.get('font', 'Arial'),
+                        'color': hex_color,
+                    })
+
+        doc.close()
+        return jsonify({'blocks': blocks, 'count': len(blocks)})
+    except Exception as e:
+        import traceback
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+# ── Merge PDFs ──────────────────────────────────────────────────────────────
+@app.route('/merge', methods=['POST'])
+def merge_pdfs():
+    from pypdf import PdfWriter
+    uid = str(uuid.uuid4())[:8]
+    saved_paths = []
+    output_path = os.path.join(OUTPUT_FOLDER, f'{uid}_merged.pdf')
+    try:
+        files = request.files.getlist('files')
+        if not files or len(files) < 2:
+            return jsonify({'error': 'Please upload at least 2 PDF files'}), 400
+        writer = PdfWriter()
+        for f in files:
+            if not f.filename.lower().endswith('.pdf'):
+                return jsonify({'error': f'{f.filename} is not a PDF'}), 400
+            p = os.path.join(UPLOAD_FOLDER, f'{uid}_{len(saved_paths)}.pdf')
+            f.save(p)
+            saved_paths.append(p)
+            from pypdf import PdfReader
+            reader = PdfReader(p)
+            for page in reader.pages:
+                writer.add_page(page)
+        with open(output_path, 'wb') as out:
+            writer.write(out)
+        return send_file(output_path, as_attachment=True, download_name='merged.pdf')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        for p in saved_paths:
+            try:
+                if os.path.exists(p): os.remove(p)
+            except: pass
+        try:
+            if os.path.exists(output_path): os.remove(output_path)
+        except: pass
+
+# ── Split PDF ───────────────────────────────────────────────────────────────
+@app.route('/split', methods=['POST'])
+def split_pdf():
+    from pypdf import PdfReader, PdfWriter
+    uid = str(uuid.uuid4())[:8]
+    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
+    output_zip = os.path.join(OUTPUT_FOLDER, f'{uid}_split.zip')
+    output_paths = []
+    try:
+        f = request.files.get('file')
+        if not f:
+            return jsonify({'error': 'No file uploaded'}), 400
+        split_type = request.form.get('split_type', 'all')  # 'all' or 'range'
+        f.save(input_path)
+        reader = PdfReader(input_path)
+        total = len(reader.pages)
+
+        if split_type == 'all':
+            # Every page becomes its own PDF
+            ranges = [(i, i) for i in range(total)]
+        else:
+            # Parse range like "1-3, 5-7, 9"
+            pages_param = request.form.get('pages', '').strip()
+            ranges = []
+            for part in pages_param.split(','):
+                part = part.strip()
+                if '-' in part:
+                    s, e = part.split('-')
+                    ranges.append((int(s.strip())-1, int(e.strip())-1))
+                elif part:
+                    n = int(part) - 1
+                    ranges.append((n, n))
+
+        if not ranges:
+            return jsonify({'error': 'No valid page ranges specified'}), 400
+
+        for idx, (start, end) in enumerate(ranges):
+            writer = PdfWriter()
+            for page_num in range(max(0, start), min(end+1, total)):
+                writer.add_page(reader.pages[page_num])
+            out_path = os.path.join(OUTPUT_FOLDER, f'{uid}_part{idx+1}.pdf')
+            with open(out_path, 'wb') as out:
+                writer.write(out)
+            output_paths.append((out_path, f'part_{idx+1}_pages_{start+1}-{end+1}.pdf'))
+
+        if len(output_paths) == 1:
+            # Single output — return directly
+            return send_file(output_paths[0][0], as_attachment=True,
+                           download_name=output_paths[0][1])
+        else:
+            # Multiple outputs — zip them
+            with zipfile.ZipFile(output_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for path, arcname in output_paths:
+                    zf.write(path, arcname)
+            return send_file(output_zip, as_attachment=True, download_name='split_pages.zip')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        try:
+            if os.path.exists(input_path): os.remove(input_path)
+        except: pass
+        for path, _ in output_paths:
+            try:
+                if os.path.exists(path): os.remove(path)
+            except: pass
+        try:
+            if os.path.exists(output_zip): os.remove(output_zip)
+        except: pass
+
+# ── Lock PDF ────────────────────────────────────────────────────────────────
+@app.route('/lock', methods=['POST'])
+def lock_pdf():
+    from pypdf import PdfReader, PdfWriter
+    uid = str(uuid.uuid4())[:8]
+    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
+    output_path = os.path.join(OUTPUT_FOLDER, f'{uid}_locked.pdf')
+    try:
+        f = request.files.get('file')
+        password = request.form.get('password', '').strip()
+        if not f:
+            return jsonify({'error': 'No file uploaded'}), 400
+        if not password:
+            return jsonify({'error': 'Please enter a password'}), 400
+        if len(password) < 4:
+            return jsonify({'error': 'Password must be at least 4 characters'}), 400
+        f.save(input_path)
+        reader = PdfReader(input_path)
+        writer = PdfWriter()
+        for page in reader.pages:
+            writer.add_page(page)
+        writer.encrypt(password)
+        with open(output_path, 'wb') as out:
+            writer.write(out)
+        return send_file(output_path, as_attachment=True, download_name='locked.pdf')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        try:
+            if os.path.exists(input_path): os.remove(input_path)
+        except: pass
+        try:
+            if os.path.exists(output_path): os.remove(output_path)
+        except: pass
+
+# ── Unlock PDF ──────────────────────────────────────────────────────────────
+@app.route('/unlock', methods=['POST'])
+def unlock_pdf():
+    from pypdf import PdfReader, PdfWriter
+    uid = str(uuid.uuid4())[:8]
+    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
+    output_path = os.path.join(OUTPUT_FOLDER, f'{uid}_unlocked.pdf')
+    try:
+        f = request.files.get('file')
+        password = request.form.get('password', '').strip()
+        if not f:
+            return jsonify({'error': 'No file uploaded'}), 400
+        if not password:
+            return jsonify({'error': 'Please enter the PDF password'}), 400
+        f.save(input_path)
+        reader = PdfReader(input_path)
+        if not reader.is_encrypted:
+            return jsonify({'error': 'This PDF is not password protected'}), 400
+        result = reader.decrypt(password)
+        if result == 0:
+            return jsonify({'error': 'Incorrect password. Please try again.'}), 400
+        writer = PdfWriter()
+        for page in reader.pages:
+            writer.add_page(page)
+        with open(output_path, 'wb') as out:
+            writer.write(out)
+        return send_file(output_path, as_attachment=True, download_name='unlocked.pdf')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        try:
+            if os.path.exists(input_path): os.remove(input_path)
+        except: pass
+        try:
+            if os.path.exists(output_path): os.remove(output_path)
+        except: pass
+
+@app.route('/compress', methods=['POST'])
+def compress_pdf():
+    import subprocess
+    uid = str(uuid.uuid4())[:8]
+    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
+    output_path = os.path.join(OUTPUT_FOLDER, f'{uid}_compressed.pdf')
+    try:
+        f = request.files.get('file')
+        if not f:
+            return jsonify({'error': 'No file uploaded'}), 400
+        level = request.form.get('level', 'medium')
+        f.save(input_path)
+        original_size = os.path.getsize(input_path)
+
+        # Ghostscript settings with explicit image downsampling
+        # This is what makes the difference vs tools like ilovepdf
+        gs_image_settings = {
+            'low': [
+                '-dColorImageResolution=150',
+                '-dGrayImageResolution=150',
+                '-dMonoImageResolution=300',
+                '-dColorImageDownsampleType=/Bicubic',
+                '-dGrayImageDownsampleType=/Bicubic',
+                '-dDownsampleColorImages=true',
+                '-dDownsampleGrayImages=true',
+                '-dColorImageFilter=/DCTEncode',
+                '-dGrayImageFilter=/DCTEncode',
+                '-dAutoFilterColorImages=false',
+                '-dAutoFilterGrayImages=false',
+            ],
+            'medium': [
+                '-dColorImageResolution=120',
+                '-dGrayImageResolution=120',
+                '-dMonoImageResolution=200',
+                '-dColorImageDownsampleType=/Bicubic',
+                '-dGrayImageDownsampleType=/Bicubic',
+                '-dDownsampleColorImages=true',
+                '-dDownsampleGrayImages=true',
+                '-dColorImageFilter=/DCTEncode',
+                '-dGrayImageFilter=/DCTEncode',
+                '-dAutoFilterColorImages=false',
+                '-dAutoFilterGrayImages=false',
+            ],
+            'high': [
+                '-dColorImageResolution=72',
+                '-dGrayImageResolution=72',
+                '-dMonoImageResolution=150',
+                '-dColorImageDownsampleType=/Bicubic',
+                '-dGrayImageDownsampleType=/Bicubic',
+                '-dDownsampleColorImages=true',
+                '-dDownsampleGrayImages=true',
+                '-dColorImageFilter=/DCTEncode',
+                '-dGrayImageFilter=/DCTEncode',
+                '-dAutoFilterColorImages=false',
+                '-dAutoFilterGrayImages=false',
+            ],
+        }
+        gs_pdf_settings = {
+            'low':    '/prepress',
+            'medium': '/ebook',
+            'high':   '/screen',
+        }
+        gs_setting = gs_pdf_settings.get(level, '/ebook')
+        extra_args = gs_image_settings.get(level, [])
+
+        gs_result = subprocess.run([
+            'gs', '-sDEVICE=pdfwrite', '-dCompatibilityLevel=1.4',
+            f'-dPDFSETTINGS={gs_setting}',
+            '-dNOPAUSE', '-dQUIET', '-dBATCH',
+        ] + extra_args + [
+            f'-sOutputFile={output_path}', input_path
+        ], capture_output=True, timeout=300)
+
+        if gs_result.returncode != 0 or not os.path.exists(output_path):
+            # Fallback: pypdf compression
+            from pypdf import PdfReader, PdfWriter
+            reader = PdfReader(input_path)
+            writer = PdfWriter()
+            for page in reader.pages:
+                page.compress_content_streams()
+                writer.add_page(page)
+            with open(output_path, 'wb') as out:
+                writer.write(out)
+
+        compressed_size = os.path.getsize(output_path)
+
+        # Always return the smaller file — never inflate
+        if compressed_size >= original_size:
+            import shutil
+            shutil.copy2(input_path, output_path)
+            compressed_size = original_size
+            reduction = 0.0
+        else:
+            reduction = round((1 - compressed_size / original_size) * 100, 1)
+
+        response = send_file(output_path, as_attachment=True,
+                           download_name='compressed.pdf')
+        response.headers['X-Original-Size'] = str(original_size)
+        response.headers['X-Compressed-Size'] = str(compressed_size)
+        response.headers['X-Reduction'] = str(reduction)
+        return response
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        try:
+            if os.path.exists(input_path): os.remove(input_path)
+        except: pass
+        try:
+            if os.path.exists(output_path): os.remove(output_path)
+        except: pass
+
+
+def convert_office_to_pdf(input_path, output_dir):
+    """Convert DOCX/XLSX/PPTX to PDF using LibreOffice headless."""
+    import subprocess
+    result = subprocess.run([
+        'libreoffice', '--headless', '--convert-to', 'pdf',
+        '--outdir', output_dir, input_path
+    ], capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise Exception(f'LibreOffice conversion failed: {result.stderr}')
+    # LibreOffice names output as original_filename.pdf
+    base = os.path.splitext(os.path.basename(input_path))[0]
+    out = os.path.join(output_dir, base + '.pdf')
+    if not os.path.exists(out):
+        raise Exception('Output PDF not found after conversion')
+    return out
+
+def images_to_pdf(image_paths, output_path):
+    """Combine multiple images into a single PDF."""
+    images = []
+    for p in image_paths:
+        img = Image.open(p).convert('RGB')
+        images.append(img)
+    if not images:
+        raise Exception('No valid images found')
+    images[0].save(output_path, save_all=True, append_images=images[1:])
+
+@app.route('/convert-to-pdf', methods=['POST'])
+def convert_to_pdf():
+    fmt = request.form.get('format', '').lower()
+    uid = str(uuid.uuid4())[:8]
+    saved_paths = []
+
+    try:
+        files = request.files.getlist('files')
+        if not files or all(f.filename == '' for f in files):
+            return jsonify({'error': 'No files uploaded'}), 400
+
+        if fmt == 'image':
+            # Multiple images → single PDF
+            allowed = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp', '.tiff'}
+            img_paths = []
+            for i, f in enumerate(files):
+                ext = os.path.splitext(f.filename.lower())[1]
+                if ext not in allowed:
+                    return jsonify({'error': f'Unsupported image format: {ext}'}), 400
+                p = os.path.join(UPLOAD_FOLDER, f'{uid}_{i}{ext}')
+                f.save(p)
+                saved_paths.append(p)
+                img_paths.append(p)
+
+            base_name = secure_filename(files[0].filename)
+            base_name = os.path.splitext(base_name)[0].replace('.', '_')
+            output_filename = f'{base_name}_converted.pdf'
+            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+            images_to_pdf(img_paths, output_path)
+
+        elif fmt in ('docx', 'xlsx', 'pptx'):
+            # Single office file → PDF
+            if len(files) != 1:
+                return jsonify({'error': 'Please upload exactly one file'}), 400
+            f = files[0]
+            ext = os.path.splitext(f.filename.lower())[1]
+            expected = {'docx': '.docx', 'xlsx': '.xlsx', 'pptx': '.pptx'}
+            if ext != expected[fmt]:
+                return jsonify({'error': f'Expected a {expected[fmt]} file'}), 400
+
+            input_path = os.path.join(UPLOAD_FOLDER, f'{uid}{ext}')
+            f.save(input_path)
+            saved_paths.append(input_path)
+
+            base_name = secure_filename(f.filename)
+            base_name = os.path.splitext(base_name)[0].replace('.', '_')
+            output_filename = f'{base_name}_converted.pdf'
+
+            pdf_path = convert_office_to_pdf(input_path, OUTPUT_FOLDER)
+            # Rename to our output filename
+            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+            if pdf_path != output_path:
+                os.rename(pdf_path, output_path)
+
+        else:
+            return jsonify({'error': 'Unsupported format'}), 400
+
+        return send_file(output_path, as_attachment=True, download_name=output_filename)
+
+    except Exception as e:
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+    finally:
+        for p in saved_paths:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except:
+                pass
+        try:
+            if 'output_path' in locals() and os.path.exists(output_path):
+                os.remove(output_path)
+        except:
+            pass
+
+@app.route('/detect', methods=['POST'])
+def detect():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file'}), 400
+    file = request.files['file']
+    if not file.filename.endswith('.pdf'):
+        return jsonify({'error': 'Not a PDF'}), 400
+    uid = str(uuid.uuid4())[:8]
+    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
+    file.save(input_path)
+    try:
+        from pypdf import PdfReader
+        from pypdf.errors import PdfReadError
+        try:
+            reader = PdfReader(input_path)
+            is_encrypted = reader.is_encrypted
+        except PdfReadError:
+            is_encrypted = True
+        except Exception:
+            is_encrypted = False
+
+        if is_encrypted:
+            return jsonify({'type': 'unknown', 'uid': uid, 'page_count': 0, 'is_encrypted': True})
+
+        pdf_type = detect_pdf_type(input_path)
+        with pdfplumber.open(input_path) as pdf:
+            page_count = len(pdf.pages)
+        return jsonify({'type': pdf_type, 'uid': uid, 'page_count': page_count, 'is_encrypted': False})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        try:
+            if os.path.exists(input_path): os.remove(input_path)
+        except: pass
+
+@app.route('/preview-pptx', methods=['POST'])
+def preview_pptx():
+    """Convert a specific slide of PPTX to image using LibreOffice."""
+    import subprocess
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file'}), 400
+    f = request.files['file']
+    slide_num = int(request.form.get('slide', 1))
+    uid = str(uuid.uuid4())[:8]
+    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pptx')
+    f.save(input_path)
+    try:
+        # Convert PPTX to PDF using LibreOffice
+        result = subprocess.run([
+            'libreoffice', '--headless', '--convert-to', 'pdf',
+            '--outdir', OUTPUT_FOLDER, input_path
+        ], capture_output=True, text=True, timeout=60)
+        lo_pdf = os.path.join(OUTPUT_FOLDER, f'{uid}.pdf')
+        if not os.path.exists(lo_pdf):
+            return jsonify({'error': 'Conversion failed'}), 500
+        # Get total slide count
+        with pdfplumber.open(lo_pdf) as pdf:
+            total_slides = len(pdf.pages)
+        # Render requested slide as image
+        imgs = convert_from_path(lo_pdf, dpi=150,
+                                 first_page=slide_num, last_page=slide_num)
+        if not imgs:
+            return jsonify({'error': 'Could not render slide'}), 500
+        img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_slide.jpg')
+        imgs[0].save(img_path, 'JPEG', quality=85)
+        # Return image with total slides in header
+        response = send_file(img_path, mimetype='image/jpeg')
+        response.headers['X-Total-Slides'] = str(total_slides)
+        return response
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        for p in [input_path,
+                  os.path.join(OUTPUT_FOLDER, f'{uid}.pdf'),
+                  os.path.join(OUTPUT_FOLDER, f'{uid}_slide.jpg')]:
+            try:
+                if os.path.exists(p): os.remove(p)
+            except: pass
+
+
+@app.route('/convert', methods=['POST'])
+def convert():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file uploaded'}), 400
+    file = request.files['file']
+    fmt = request.form.get('format', 'jpg').lower()
+    mode = request.form.get('mode', 'image')
+    if file.filename == '' or not file.filename.endswith('.pdf'):
+        return jsonify({'error': 'Please upload a valid PDF'}), 400
+
+    uid = str(uuid.uuid4())[:8]
+    input_path = os.path.join(UPLOAD_FOLDER, f'{uid}.pdf')
+    file.save(input_path)
+    base_name = secure_filename(file.filename).replace('.pdf', '').replace('.', '_')
+
+    try:
+        with pdfplumber.open(input_path) as pdf:
+            page_count = len(pdf.pages)
+        dpi = 150 if page_count <= 5 else 100
+
+        if fmt in ('jpg', 'png'):
+            save_fmt = 'JPEG' if fmt == 'jpg' else 'PNG'
+            ext = fmt
+            pages_param = request.form.get('pages', '').strip()
+            if pages_param:
+                # Parse first, then only render the specific requested pages
+                selected_indices = parse_pages(pages_param, page_count)
+                if not selected_indices:
+                    return jsonify({'error': 'No valid pages selected. Use format like: 1, 3, 5-7'}), 400
+                selected_images = []
+                for idx in selected_indices:
+                    imgs = convert_from_path(
+                        input_path, dpi=dpi, thread_count=1,
+                        first_page=idx+1, last_page=idx+1,
+                        use_cropbox=True, strict=False
+                    )
+                    if imgs:
+                        selected_images.append(imgs[0])
+            else:
+                # All pages
+                images = pdf_to_images(input_path, dpi=dpi)
+                selected_images = images
+
+            if len(selected_images) == 1:
+                output_filename = f'{base_name}_converted.{ext}'
+                output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+                save_image_file(selected_images[0], output_path, save_fmt)
+            else:
+                output_filename = f'{base_name}_converted.zip'
+                output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+                img_paths = []
+                for i, img in enumerate(selected_images):
+                    img_path = os.path.join(OUTPUT_FOLDER, f'{uid}_p{i+1}.{ext}')
+                    save_image_file(img, img_path, save_fmt)
+                    img_paths.append((img_path, f'page{i+1}.{ext}'))
+                with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for img_path, arcname in img_paths:
+                        zf.write(img_path, arcname)
+
+        elif fmt == 'docx':
+            output_filename = f'{base_name}_converted.docx'
+            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+            pages_param = request.form.get('pages', '').strip()
+            if mode == 'ocr':
+                save_as_docx_text(input_path, output_path, pages_param or None)
+            elif mode == 'image':
+                page_images = get_page_images(input_path, pages_param, page_count, dpi)
+                save_as_docx_images(page_images, output_path, uid)
+            else:
+                save_as_docx_native(input_path, output_path, uid, pages_param or None)
+
+        elif fmt == 'pptx':
+            output_filename = f'{base_name}_converted.pptx'
+            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+            pages_param = request.form.get('pages', '').strip()
+            page_images = get_page_images(input_path, pages_param, page_count, dpi)
+            if mode == 'ocr':
+                from pptx import Presentation
+                from pptx.util import Inches, Emu
+                pages_text = ocr_images(page_images)
+                first_img = page_images[0]
+                slide_w = Inches(10)
+                slide_h = Emu(int(slide_w * first_img.size[1] / first_img.size[0]))
+                prs = Presentation()
+                prs.slide_width = slide_w
+                prs.slide_height = slide_h
+                slide_layout = prs.slide_layouts[1]
+                for i, text in enumerate(pages_text):
+                    slide = prs.slides.add_slide(slide_layout)
+                    slide.shapes.title.text = f'Page {i+1}'
+                    tf = slide.placeholders[1].text_frame
+                    tf.word_wrap = True
+                    tf.text = text[:800] if text.strip() else '(no text detected)'
+                prs.save(output_path)
+            else:
+                save_as_pptx_images(page_images, output_path, uid)
+
+        elif fmt == 'html':
+            output_filename = f'{base_name}_converted.html'
+            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+            pages_param = request.form.get('pages', '').strip()
+            page_images = get_page_images(input_path, pages_param, page_count, dpi)
+            save_as_html_images(page_images, output_path, uid)
+
+        elif fmt == 'xlsx':
+            output_filename = f'{base_name}_converted.xlsx'
+            output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+            pages_param = request.form.get('pages', '').strip()
+            save_as_xlsx(input_path, output_path, pages_param or None, page_count)
+
+        else:
+            return jsonify({'error': 'Unsupported format'}), 400
+
+        return send_file(output_path, as_attachment=True, download_name=output_filename)
+
+    except Exception as e:
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+    finally:
+        # Delete uploaded PDF immediately
+        if os.path.exists(input_path):
+            os.remove(input_path)
+        # Delete output file and any temp page images after sending
+        try:
+            if 'output_path' in locals() and os.path.exists(output_path):
+                os.remove(output_path)
+        except:
+            pass
+        # Clean up any temp page images created during conversion
+        import glob
+        for tmp_file in glob.glob(os.path.join(OUTPUT_FOLDER, f'{uid}_*')):
+            try:
+                os.remove(tmp_file)
+            except:
+                pass
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
