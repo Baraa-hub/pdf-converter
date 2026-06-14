@@ -878,6 +878,76 @@ def google_verify():
 def privacy():
     return render_template('privacy.html')
 
+@app.route('/compress-pdf')
+def page_compress():
+    return render_template('index.html',
+        active_tab='compress',
+        seo_title='Compress PDF Online Free – Reduce PDF File Size | ieatpdf',
+        seo_desc='Compress your PDF online for free. Reduce PDF file size without losing quality. No signup needed. Files deleted immediately after compression.',
+        seo_keywords='compress pdf, reduce pdf size, pdf compressor, shrink pdf, pdf file size reducer',
+        seo_canonical='https://ieatpdf.com/compress-pdf'
+    )
+
+@app.route('/merge-pdf')
+def page_merge():
+    return render_template('index.html',
+        active_tab='merge',
+        seo_title='Merge PDF Files Online Free – Combine PDFs | ieatpdf',
+        seo_desc='Merge multiple PDF files into one online for free. Fast, easy, and secure. No signup required. Files deleted immediately after merging.',
+        seo_keywords='merge pdf, combine pdf, join pdf files, pdf merger, merge pdf online free',
+        seo_canonical='https://ieatpdf.com/merge-pdf'
+    )
+
+@app.route('/split-pdf')
+def page_split():
+    return render_template('index.html',
+        active_tab='split',
+        seo_title='Split PDF Online Free – Separate PDF Pages | ieatpdf',
+        seo_desc='Split a PDF into separate files by page range. Free, fast and private. No signup needed. Files deleted immediately after splitting.',
+        seo_keywords='split pdf, separate pdf pages, pdf splitter, extract pdf pages, split pdf online free',
+        seo_canonical='https://ieatpdf.com/split-pdf'
+    )
+
+@app.route('/lock-pdf')
+def page_lock():
+    return render_template('index.html',
+        active_tab='lock',
+        seo_title='Lock PDF with Password Online Free | ieatpdf',
+        seo_desc='Password protect your PDF file online for free. Add encryption to your PDF instantly. No signup required. Files deleted immediately.',
+        seo_keywords='lock pdf, password protect pdf, encrypt pdf, add password to pdf, pdf password protection',
+        seo_canonical='https://ieatpdf.com/lock-pdf'
+    )
+
+@app.route('/unlock-pdf')
+def page_unlock():
+    return render_template('index.html',
+        active_tab='unlock',
+        seo_title='Unlock PDF – Remove PDF Password Online Free | ieatpdf',
+        seo_desc='Remove password protection from your PDF online for free. Unlock encrypted PDFs instantly. No signup required. Files deleted immediately.',
+        seo_keywords='unlock pdf, remove pdf password, decrypt pdf, pdf password remover, unlock protected pdf',
+        seo_canonical='https://ieatpdf.com/unlock-pdf'
+    )
+
+@app.route('/pdf-to-word')
+def page_pdf_to_word():
+    return render_template('index.html',
+        active_tab='from-pdf',
+        seo_title='Convert PDF to Word Online Free | ieatpdf',
+        seo_desc='Convert PDF to Word (.docx) online for free. Fast, accurate PDF to Word conversion. No signup required. Files deleted immediately.',
+        seo_keywords='pdf to word, convert pdf to word, pdf to docx, pdf word converter, pdf to word online free',
+        seo_canonical='https://ieatpdf.com/pdf-to-word'
+    )
+
+@app.route('/pdf-to-jpg')
+def page_pdf_to_jpg():
+    return render_template('index.html',
+        active_tab='from-pdf',
+        seo_title='Convert PDF to JPG Online Free | ieatpdf',
+        seo_desc='Convert PDF pages to JPG images online for free. High quality PDF to image conversion. No signup required. Files deleted immediately.',
+        seo_keywords='pdf to jpg, convert pdf to image, pdf to png, pdf image converter, pdf to jpg online free',
+        seo_canonical='https://ieatpdf.com/pdf-to-jpg'
+    )
+
 @app.route('/edit-pdf')
 def page_edit():
     return render_template('edit.html')
